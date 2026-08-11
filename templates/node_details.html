@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Node Details — Pi IoT Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <main class="dashboard">
+        <header class="header details-header">
+            <div>
+                <h1>Node details</h1>
+                <p id="nodeHeading">{{ node_id }}</p>
+            </div>
+            <a class="back-link" href="/">← Dashboard</a>
+        </header>
+        <div id="nodeDetails" class="details-grid" data-node-id="{{ node_id }}">
+            <section class="card"><h2>Status</h2><dl id="statusDetails" class="detail-list"></dl></section>
+            <section class="card"><h2>Device</h2><dl id="deviceDetails" class="detail-list"></dl></section>
+            <section class="card"><h2>Firmware</h2><dl id="firmwareDetails" class="detail-list"></dl></section>
+        </div>
+        <p id="nodeError" hidden>Node information could not be loaded.</p>
+    </main>
+    <script src="/static/node_details.js"></script>
+</body>
+</html>

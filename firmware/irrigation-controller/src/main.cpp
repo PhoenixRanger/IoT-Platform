@@ -1,0 +1,96 @@
+#include <Arduino.h>
+#include <Adafruit_MS8607.h>
+#include <DHT.h>
+#include <PubSubClient.h>
+#include <WiFi.h>
+#include <Wire.h>
+#include "secrets.h"
+#include "diagnostics/NodeIdentity.h"
+#include "mqtt/MetadataPayload.h"
+#include "ota/OtaService.h"
+#include "wifi/WifiConnection.h"
+
+#define DHT_PIN 47
+#define DHT_TYPE DHT22
+#define MS8607_SDA_PIN 41
+#define MS8607_SCL_PIN 42
+
+const char* FIRMWARE_NAME = "irrigation-controller";
+const char* HARDWARE_MODEL = "heltec-wifi-lora-32-v3";
+const char* HARDWARE_REVISION = "prototype-a";
+const NodeIdentity IDENTITY = {NODE_ID, FIRMWARE_NAME, FIRMWARE_VERSION,
+                               HARDWARE_MODEL, HARDWARE_REVISION, OTA_HOSTNAME};
+const unsigned long PUBLISH_INTERVAL_MS = 10000;
+const unsigned long MS8607_RECOVERY_INTERVAL_MS = 30000;
+WiFiClient wifiClient;
+PubSubClient mqttClient(wifiClient);
+DHT dht(DHT_PIN, DHT_TYPE);
+Adafruit_MS8607 ms8607;
+bool ms8607Available = false;
+unsigned long lastPublish = 0;
+unsigned long lastMs8607RecoveryAttempt = 0;
+
+void appendReading(String& json, const char* name, float value) {
+  if (!isnan(value) && !isinf(value)) json += ",\"" + String(name) + "\":" + String(value, 1);
+}
+
+void recoverMs8607IfNeeded() {
+  if (ms8607Available ||
+      millis() - lastMs8607RecoveryAttempt < MS8607_RECOVERY_INTERVAL_MS) {
+    return;
+  }
+
+  lastMs8607RecoveryAttempt = millis();
+  Serial.println("Retrying MS8607 initialization...");
+  ms8607Available = ms8607.begin(&Wire);
+  if (ms8607Available) {
+    Serial.println("MS8607 recovered; outside readings will resume.");
+  } else {
+    Serial.println("MS8607 recovery failed; DHT22 and node telemetry remain available.");
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  dht.begin();
+  Wire.begin(MS8607_SDA_PIN, MS8607_SCL_PIN);
+  ms8607Available = ms8607.begin(&Wire);
+  if (ms8607Available) {
+    Serial.println("MS8607 initialized.");
+  } else {
+    Serial.println("MS8607 initialization failed; retrying every 30 seconds.");
+    lastMs8607RecoveryAttempt = millis();
+  }
+  mqttClient.setServer(MQTT_SERVER, 1883);
+  mqttClient.setBufferSize(768);
+  if (connectToWifi(WIFI_SSID, WIFI_PASSWORD)) startOta(IDENTITY.otaHostname, OTA_PASSWORD);
+}
+
+void loop() {
+  recoverMs8607IfNeeded();
+
+  if (WiFi.status() != WL_CONNECTED) {
+    if (connectToWifi(WIFI_SSID, WIFI_PASSWORD)) startOta(IDENTITY.otaHostname, OTA_PASSWORD);
+    return;
+  }
+  serviceOta();
+  if (!mqttClient.connected() && !mqttClient.connect(IDENTITY.nodeId)) { delay(250); return; }
+  mqttClient.loop();
+  if (millis() - lastPublish < PUBLISH_INTERVAL_MS) { delay(10); return; }
+  lastPublish = millis();
+  String json = metadataJson(IDENTITY);
+  appendReading(json, "enclosure_temperature", dht.readTemperature());
+  appendReading(json, "enclosure_humidity", dht.readHumidity());
+  if (ms8607Available) {
+    sensors_event_t pressure, temperature, humidity;
+    if (ms8607.getEvent(&pressure, &temperature, &humidity)) {
+      appendReading(json, "outside_temperature", temperature.temperature);
+      appendReading(json, "outside_humidity", humidity.relative_humidity);
+      appendReading(json, "outside_pressure", pressure.pressure);
+    }
+  }
+  json += ",\"rssi\":" + String(WiFi.RSSI());
+  json += ",\"uptime_seconds\":" + String(millis() / 1000) + "}";
+  String topic = "sensors/" + String(IDENTITY.nodeId) + "/readings";
+  mqttClient.publish(topic.c_str(), json.c_str());
+}

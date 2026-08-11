@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Pi IoT Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <main class="dashboard">
+        <header class="header">
+            <div>
+                <h1>Pi IoT Dashboard</h1>
+                <p>Live environmental monitoring from ESP32 sensor nodes</p>
+            </div>
+        </header>
+
+        <section class="controls">
+            <label for="nodeSelect">Node</label>
+            <select id="nodeSelect"></select>
+
+            <label for="sensorSelect">Chart sensor</label>
+            <select id="sensorSelect"></select>
+        </section>
+
+        <section class="dashboard-section">
+            <h2>Node status</h2>
+            <div id="nodeStatusCards" class="cards cards-status"></div>
+        </section>
+
+        <section id="outsideConditionsSection" class="dashboard-section sensor-group">
+            <h2>Outside Conditions</h2>
+            <div id="outsideConditionsCards" class="cards cards-telemetry"></div>
+        </section>
+
+        <section id="enclosureConditionsSection" class="dashboard-section sensor-group">
+            <h2>Enclosure Conditions</h2>
+            <div id="enclosureConditionsCards" class="cards cards-telemetry"></div>
+        </section>
+
+        <section id="nodeTelemetrySection" class="dashboard-section sensor-group">
+            <h2>Node Telemetry</h2>
+            <div id="nodeTelemetryCards" class="cards cards-telemetry"></div>
+        </section>
+
+        <section class="chart-card">
+            <h2 id="chartTitle">Sensor chart</h2>
+            <canvas id="sensorChart"></canvas>
+        </section>
+
+        <section class="table-card">
+            <h2>Recent readings</h2>
+            <table>
+                <thead id="readingTableHead"></thead>
+                <tbody id="readingTableBody"></tbody>
+            </table>
+        </section>
+    </main>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
