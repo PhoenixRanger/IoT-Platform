@@ -57,20 +57,25 @@ def init_db():
         )
     """)
 
-    # SQLite installations created before v1.10.0 have the original nodes
-    # table. Add remote-management fields in place so sensor.db is preserved.
+    # Add registry and device-reported metadata in place so existing sensor.db
+    # files, node identities, and telemetry relationships are preserved.
     existing_columns = {
         row[1] for row in cur.execute("PRAGMA table_info(nodes)").fetchall()
     }
-    for column in (
-        "hardware_model",
-        "hardware_revision",
-        "firmware_name",
-        "firmware_version",
-        "ota_hostname",
-    ):
+    additive_columns = {
+        "hardware_model": "TEXT",
+        "hardware_revision": "TEXT",
+        "firmware_name": "TEXT",
+        "firmware_version": "TEXT",
+        "ota_hostname": "TEXT",
+        "category": "TEXT",
+        "latitude": "REAL",
+        "longitude": "REAL",
+        "enabled": "INTEGER NOT NULL DEFAULT 1",
+    }
+    for column, definition in additive_columns.items():
         if column not in existing_columns:
-            cur.execute(f"ALTER TABLE nodes ADD COLUMN {column} TEXT")
+            cur.execute(f"ALTER TABLE nodes ADD COLUMN {column} {definition}")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS sensors (
@@ -95,6 +100,14 @@ def init_db():
             timestamp TEXT NOT NULL,
             FOREIGN KEY (node_db_id) REFERENCES nodes(id)
         )
+    """)
+
+    # Supports bounded recent-cycle lookups for one node. The dashboard first
+    # walks this covering index only until it finds READING_LIMIT timestamps,
+    # then uses the same index to retrieve every row in those cycles.
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_measurements_node_timestamp_id
+        ON measurements (node_id, timestamp DESC, id DESC)
     """)
 
     cur.execute("""
@@ -148,7 +161,8 @@ def get_nodes():
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT node_id, name, location, node_type, created_at
+        SELECT node_id, name, location, category, latitude, longitude,
+               enabled, node_type, created_at
         FROM nodes
         ORDER BY node_id ASC
     """)
@@ -161,16 +175,18 @@ def get_nodes():
             "node_id": row[0],
             "name": row[1],
             "location": row[2],
-            "node_type": row[3],
-            "created_at": row[4]
+            "category": row[3],
+            "latitude": row[4],
+            "longitude": row[5],
+            "enabled": bool(row[6]),
+            "node_type": row[7],
+            "created_at": row[8]
         }
         for row in rows
     ]
 
 
-NODE_METADATA_FIELDS = (
-    "name",
-    "location",
+DEVICE_METADATA_FIELDS = (
     "node_type",
     "hardware_model",
     "hardware_revision",
@@ -180,9 +196,9 @@ NODE_METADATA_FIELDS = (
 )
 
 
-def update_node_metadata(node_id, metadata):
-    """Create a node if needed and update only metadata explicitly reported."""
-    values = {key: metadata[key] for key in NODE_METADATA_FIELDS if key in metadata}
+def update_device_metadata(node_id, metadata):
+    """Update only device-owned metadata, creating its node when necessary."""
+    values = {key: metadata[key] for key in DEVICE_METADATA_FIELDS if key in metadata}
     conn = get_connection()
     cur = conn.cursor()
     get_or_create_node(cur, node_id)
@@ -196,12 +212,33 @@ def update_node_metadata(node_id, metadata):
     conn.close()
 
 
+# Backward-compatible Python entry point with restricted v1.11 ownership.
+update_node_metadata = update_device_metadata
+
+
+def update_node_registry(node_id, values):
+    """Update validated user-owned registry fields on an existing node."""
+    conn = get_connection()
+    cur = conn.cursor()
+    assignments = ", ".join(f"{key} = ?" for key in values)
+    parameters = [int(value) if key == "enabled" else value for key, value in values.items()]
+    cur.execute(
+        f"UPDATE nodes SET {assignments} WHERE node_id = ?",
+        (*parameters, node_id),
+    )
+    updated = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+
 def get_node(node_id):
     conn = get_connection()
     conn.row_factory = sqlite3.Row
     row = conn.execute(
         """
-        SELECT node_id, name, location, node_type, hardware_model,
+        SELECT node_id, name, location, category, latitude, longitude,
+               enabled, node_type, hardware_model,
                hardware_revision, firmware_name, firmware_version,
                ota_hostname, created_at
         FROM nodes WHERE node_id = ?
@@ -209,7 +246,11 @@ def get_node(node_id):
         (node_id,),
     ).fetchone()
     conn.close()
-    return dict(row) if row else None
+    if row is None:
+        return None
+    node = dict(row)
+    node["enabled"] = bool(node["enabled"])
+    return node
 
 
 def get_latest_telemetry(node_id, sensor_type):
@@ -218,7 +259,7 @@ def get_latest_telemetry(node_id, sensor_type):
         """
         SELECT value FROM measurements
         WHERE node_id = ? AND sensor_type = ?
-        ORDER BY id DESC LIMIT 1
+        ORDER BY timestamp DESC, id DESC LIMIT 1
         """,
         (node_id, sensor_type),
     ).fetchone()
@@ -298,12 +339,15 @@ def get_node_status(node_id, offline_threshold_seconds=60):
     conn = get_connection()
     cur = conn.cursor()
 
+    node = cur.execute(
+        "SELECT enabled FROM nodes WHERE node_id = ?", (node_id,)
+    ).fetchone()
     cur.execute(
         """
         SELECT timestamp
         FROM measurements
         WHERE node_id = ?
-        ORDER BY id DESC
+        ORDER BY timestamp DESC, id DESC
         LIMIT 1
         """,
         (node_id,)
@@ -311,6 +355,14 @@ def get_node_status(node_id, offline_threshold_seconds=60):
 
     row = cur.fetchone()
     conn.close()
+
+    if node is not None and not bool(node[0]):
+        return {
+            "node_id": node_id,
+            "status": "disabled",
+            "last_update": row[0] if row else None,
+            "offline_threshold_seconds": offline_threshold_seconds
+        }
 
     if row is None:
         return {
@@ -338,21 +390,44 @@ def get_recent_measurements(node_id=None):
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute(
+    # Walk the newest rows for this node through the covering index and stop as
+    # soon as the requested number of distinct reporting timestamps is found.
+    # This avoids both a full-history GROUP BY and any fixed sensors-per-cycle
+    # assumption.
+    timestamp_rows = cur.execute(
         """
-        SELECT timestamp, sensor_type, value, unit
+        SELECT timestamp
         FROM measurements
         WHERE node_id = ?
-        ORDER BY id DESC
-        LIMIT ?
+        ORDER BY timestamp DESC, id DESC
         """,
-        (node_id, READING_LIMIT * 4)
+        (node_id,),
     )
+    timestamps = []
+    previous_timestamp = None
+    for (timestamp,) in timestamp_rows:
+        if timestamp == previous_timestamp:
+            continue
+        timestamps.append(timestamp)
+        previous_timestamp = timestamp
+        if len(timestamps) == READING_LIMIT:
+            break
 
-    rows = cur.fetchall()
+    if not timestamps:
+        conn.close()
+        return []
+
+    placeholders = ", ".join("?" for _ in timestamps)
+    rows = cur.execute(
+        f"""
+        SELECT timestamp, sensor_type, value, unit
+        FROM measurements
+        WHERE node_id = ? AND timestamp IN ({placeholders})
+        ORDER BY timestamp ASC, id ASC
+        """,
+        (node_id, *timestamps),
+    ).fetchall()
     conn.close()
-
-    rows.reverse()
 
     grouped = {}
 
@@ -365,4 +440,4 @@ def get_recent_measurements(node_id=None):
 
         grouped[timestamp][sensor_type] = value
 
-    return list(grouped.values())[-READING_LIMIT:]
+    return list(grouped.values())

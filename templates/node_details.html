@@ -8,17 +8,28 @@
     <main class="dashboard">
         <header class="header details-header">
             <div>
-                <h1>Node details</h1>
-                <p id="nodeHeading">{{ node_id }}</p>
+                <h1 id="nodeHeading">Node details</h1>
+                <p><strong id="nodeTechnicalId">{{ node_id }}</strong> — permanent technical identifier</p>
             </div>
             <a class="back-link" href="/">← Dashboard</a>
         </header>
-        <div id="nodeDetails" class="details-grid" data-node-id="{{ node_id }}">
-            <section class="card"><h2>Status</h2><dl id="statusDetails" class="detail-list"></dl></section>
-            <section class="card"><h2>Device</h2><dl id="deviceDetails" class="detail-list"></dl></section>
-            <section class="card"><h2>Firmware</h2><dl id="firmwareDetails" class="detail-list"></dl></section>
+        <div id="nodeDetails" data-node-id="{{ node_id }}">
+            <div class="details-grid">
+                <div id="nodeInformationPanel" class="node-information-panel">
+                    <section class="card"><h2>Node Information</h2><dl id="nodeInformation" class="detail-list"></dl></section>
+                    <div class="management-actions">
+                        <button id="editNode" class="button-primary" type="button" disabled>Edit</button>
+                        <button id="saveNode" type="button" hidden>Save</button>
+                        <button id="cancelEdit" type="button" hidden>Cancel</button>
+                        <span id="saveMessage" role="status"></span>
+                    </div>
+                </div>
+                <section class="card"><h2>Runtime Status</h2><dl id="statusDetails" class="detail-list"></dl></section>
+                <section class="card"><h2>Hardware</h2><dl id="hardwareDetails" class="detail-list"></dl></section>
+                <section class="card"><h2>Firmware</h2><dl id="firmwareDetails" class="detail-list"></dl></section>
+            </div>
         </div>
-        <p id="nodeError" hidden>Node information could not be loaded.</p>
+        <p id="nodeError" class="error-message" hidden>Node information could not be loaded.</p>
     </main>
     <script src="/static/node_details.js"></script>
 </body>

@@ -146,3 +146,37 @@ def test_on_message_persists_metadata_and_measurements(isolated_database):
     on_message(None, None, SimpleNamespace(payload=payload, topic="sensors/node_001/readings"))
     assert get_node("node_001")["firmware_version"] == "1.0.0"
     assert get_recent_measurements("node_001")[0]["temperature"] == 22.5
+
+
+def test_mqtt_cannot_overwrite_registry_metadata(isolated_database):
+    from types import SimpleNamespace
+    from app.database import (
+        get_node, get_recent_measurements, save_measurements, update_node_registry,
+    )
+    from app.mqtt_subscriber import on_message
+
+    save_measurements("node_001", {"temperature": 20})
+    update_node_registry("node_001", {
+        "name": "Server Name", "location": "Server Location", "category": "Climate",
+        "latitude": 51.5, "longitude": -0.1, "enabled": False,
+    })
+    payload = json.dumps({
+        "device_id": "node_001", "name": "Device Name", "location": "Device Location",
+        "category": "Device Category", "latitude": 0, "longitude": 0, "enabled": True,
+        "node_type": "legacy-compatible", "hardware_model": "esp32", "firmware_version": "1.1.0",
+        "ota_hostname": "node-001", "temperature": 21,
+    }).encode()
+    on_message(None, None, SimpleNamespace(payload=payload, topic="sensors/node_001/readings"))
+
+    node = get_node("node_001")
+    assert node["name"] == "Server Name"
+    assert node["location"] == "Server Location"
+    assert node["category"] == "Climate"
+    assert node["latitude"] == 51.5
+    assert node["longitude"] == -0.1
+    assert node["enabled"] is False
+    assert node["node_type"] == "legacy-compatible"
+    assert node["hardware_model"] == "esp32"
+    assert node["firmware_version"] == "1.1.0"
+    assert node["ota_hostname"] == "node-001"
+    assert get_recent_measurements("node_001")[-1]["temperature"] == 21

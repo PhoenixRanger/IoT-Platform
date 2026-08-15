@@ -79,7 +79,8 @@ async function loadNodes() {
     nodes.forEach(node => {
         const option = document.createElement("option");
         option.value = node.node_id;
-        option.textContent = node.node_id;
+        const nodeName = typeof node.name === "string" ? node.name.trim() : "";
+        option.textContent = nodeName || node.node_id;
         nodeSelect.appendChild(option);
     });
 
@@ -94,15 +95,18 @@ async function loadReadings() {
         return;
     }
 
-    const [readingsResponse, statusResponse] = await Promise.all([
-        fetch(`/api/readings?node_id=${encodeURIComponent(selectedNodeId)}`),
-        fetch(`/api/node-status?node_id=${encodeURIComponent(selectedNodeId)}`)
-    ]);
-
-    const readings = await readingsResponse.json();
-    const nodeStatus = await statusResponse.json();
-
-    renderDashboard(readings, nodeStatus);
+    try {
+        const [readingsResponse, statusResponse] = await Promise.all([
+            fetch(`/api/readings?node_id=${encodeURIComponent(selectedNodeId)}`),
+            fetch(`/api/node-status?node_id=${encodeURIComponent(selectedNodeId)}`)
+        ]);
+        if (!readingsResponse.ok || !statusResponse.ok) throw new Error("Dashboard request failed");
+        renderDashboard(await readingsResponse.json(), await statusResponse.json());
+        document.getElementById("dashboardError").hidden = true;
+    } catch (error) {
+        console.error(error);
+        document.getElementById("dashboardError").hidden = false;
+    }
 }
 
 function renderDashboard(readings, nodeStatus) {

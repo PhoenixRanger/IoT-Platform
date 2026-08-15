@@ -4,9 +4,9 @@ A Raspberry Pi + ESP32 environmental monitoring dashboard and early-stage agricu
 
 ## Current Version
 
-**v1.10.1 — Initial Public Release**
+**v1.11.0 — Node Registry & Management Foundation**
 
-This patch is the sanitized baseline intended to become the first snapshot of a separate public repository. It generalizes private deployment examples and strengthens local-file exclusions without intentionally changing v1.10.0 behavior. The platform remains a working prototype and portfolio project evolving toward a production-grade property and environmental monitoring system.
+This release adds the first server-managed node registry interface while preserving stable node IDs, existing telemetry, and the lightweight Flask + SQLite architecture.
 
 ## Features
 
@@ -14,7 +14,8 @@ This patch is the sanitized baseline intended to become the first snapshot of a 
 - MQTT ingestion with HTTP POST fallback and automatic node registration
 - Normalized SQLite measurements plus persistent node hardware/firmware metadata
 - Dynamic node/sensor selectors, cards, historical charts, node status, RSSI, and uptime
-- Clickable dashboard status tile and `/nodes/<node_id>` management details
+- Editable node names, locations, categories, GPS coordinates, and administrative enabled state
+- Clickable dashboard status tile and `/nodes/<node_id>` node management details
 - PlatformIO USB and authenticated local Wi-Fi OTA firmware uploads
 - Flask APIs and Raspberry Pi systemd deployment
 
@@ -44,7 +45,7 @@ Nodes publish flat JSON to `sensors/<device_id>/readings`. Existing payloads rem
 {"device_id":"irrigation_controller_001","firmware_name":"irrigation-controller","firmware_version":"1.0.0","hardware_model":"heltec-wifi-lora-32-v3","hardware_revision":"prototype-a","ota_hostname":"irrigation-controller-001","outside_temperature":24.8,"rssi":-61,"uptime_seconds":418}
 ```
 
-On startup, `init_db()` safely adds nullable metadata columns to an older `sensor.db`; existing rows and measurements are retained.
+On startup, `init_db()` safely adds registry and device metadata columns to an older `sensor.db`; existing rows and measurements are retained. An idempotent `(node_id, timestamp DESC, id DESC)` measurements index bounds recent-cycle reads to one node's newest data and ensures every measurement in the latest 20 reporting timestamps is returned.
 
 HTTP fallback remains:
 
@@ -83,11 +84,12 @@ The OTA partition scheme is retained in every environment. Do not hardcode trans
 - `POST /api/data` — HTTP fallback ingestion
 - `GET /api/nodes` — registered nodes
 - `GET /api/nodes/<node_id>` — metadata and calculated runtime state
+- `PATCH /api/nodes/<node_id>` — update name, location, category, GPS, or enabled state
 - `GET /api/readings?node_id=<node_id>` — readings
 - `GET /api/node-status?node_id=<node_id>` — compatible status endpoint
 - `GET /nodes/<node_id>` — node-details page
 
-Status is online when the latest measurement is at most 60 seconds old, offline when older, and unknown with no measurements. Missing metadata is returned as `null`.
+Status is disabled when administratively disabled; otherwise it is online when the latest measurement is at most 60 seconds old, offline when older, and unknown with no measurements. Missing metadata is returned as `null`.
 
 ## Configuration and secrets
 
@@ -122,5 +124,6 @@ The public repository is intended to begin with the mature v1.10.1 working tree 
 - **v1.9** — Heltec dual-climate irrigation-controller support and sensor recovery.
 - **v1.10.0** — independently versioned PlatformIO firmware, authenticated OTA, node metadata, and node details.
 - **v1.10.1** — sanitized initial-public-release baseline with no intended functional changes.
+- **v1.11.0** — node registry management, metadata ownership boundaries, and complete indexed recent reporting cycles.
 
 Future work continues toward MQTT security, LoRaWAN, actuator and node management, and a dedicated Linux property server. See the architecture and operations documents for the current design and workflows.

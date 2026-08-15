@@ -1,6 +1,10 @@
 import sqlite3
+from datetime import datetime, timedelta
 from importlib import import_module
 
+import pytest
+
+from app.config import READING_LIMIT
 from app.database import SENSOR_UNITS, get_nodes, save_measurements
 
 
@@ -205,6 +209,167 @@ def test_init_db_migrates_original_nodes_schema(tmp_path, monkeypatch):
     database.init_db()
     with sqlite3.connect(path) as connection:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(nodes)")}
-        name = connection.execute("SELECT name FROM nodes WHERE node_id='legacy'").fetchone()[0]
-    assert {"hardware_model", "hardware_revision", "firmware_name", "firmware_version", "ota_hostname"} <= columns
-    assert name == "Legacy"
+        migrated = connection.execute(
+            "SELECT name, enabled FROM nodes WHERE node_id='legacy'"
+        ).fetchone()
+    assert {
+        "hardware_model", "hardware_revision", "firmware_name", "firmware_version",
+        "ota_hostname", "category", "latitude", "longitude", "enabled",
+    } <= columns
+    assert migrated == ("Legacy", 1)
+
+
+def test_registry_patch_updates_and_clears_user_fields(client):
+    save_measurements("node_001", {"temperature": 20})
+    response = client.patch("/api/nodes/node_001", json={
+        "name": "  Greenhouse North  ", "location": "Bench 2", "category": "Climate",
+        "latitude": 51.5, "longitude": -0.12, "enabled": False,
+    })
+    assert response.status_code == 200
+    node = response.get_json()
+    assert (node["name"], node["location"], node["category"]) == (
+        "Greenhouse North", "Bench 2", "Climate",
+    )
+    assert (node["latitude"], node["longitude"]) == (51.5, -0.12)
+    assert node["enabled"] is False
+    assert node["status"] == "disabled"
+
+    cleared = client.patch("/api/nodes/node_001", json={
+        "location": " ", "category": None, "latitude": None, "longitude": None,
+    }).get_json()
+    assert cleared["location"] is None
+    assert cleared["category"] is None
+    assert cleared["latitude"] is None
+    assert cleared["longitude"] is None
+
+
+@pytest.mark.parametrize("payload", [
+    {"name": ""}, {"name": None}, {"enabled": 1}, {"enabled": "true"},
+    {"latitude": True}, {"latitude": 90.01}, {"latitude": float("nan")},
+    {"longitude": -180.01}, {"longitude": float("inf")},
+])
+def test_registry_patch_rejects_invalid_values(client, payload):
+    save_measurements("node_001", {"temperature": 20})
+    assert client.patch("/api/nodes/node_001", json=payload).status_code == 400
+
+
+@pytest.mark.parametrize("field", [
+    "node_id", "node_type", "hardware_model", "firmware_version", "ota_hostname",
+])
+def test_registry_patch_rejects_immutable_and_device_fields(client, field):
+    save_measurements("node_001", {"temperature": 20})
+    assert client.patch("/api/nodes/node_001", json={field: "changed"}).status_code == 400
+    assert client.get("/api/nodes/node_001").get_json()["node_id"] == "node_001"
+
+
+def test_registry_patch_requires_existing_node(client):
+    assert client.patch("/api/nodes/missing", json={"name": "Missing"}).status_code == 404
+
+
+def test_enabled_status_semantics_and_disabled_http_ingestion(client):
+    from app.database import get_node_status
+
+    save_measurements("disabled_node", {"temperature": 20})
+    client.patch("/api/nodes/disabled_node", json={"enabled": False})
+    response = client.post("/api/data", json={
+        "node_id": "disabled_node", "readings": {"humidity": 55},
+    })
+    assert response.status_code == 200
+    assert get_node_status("disabled_node")["status"] == "disabled"
+    assert client.get("/api/readings?node_id=disabled_node").get_json()[-1]["humidity"] == 55
+
+
+def test_status_online_offline_and_unknown(isolated_database):
+    from app.database import get_node_status, get_or_create_node
+
+    with sqlite3.connect(isolated_database) as connection:
+        get_or_create_node(connection.cursor(), "unknown_node")
+        connection.commit()
+    assert get_node_status("unknown_node")["status"] == "unknown"
+
+    save_measurements("online_node", {"temperature": 20})
+    assert get_node_status("online_node")["status"] == "online"
+
+    save_measurements("offline_node", {"temperature": 20})
+    stale = (datetime.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+    with sqlite3.connect(isolated_database) as connection:
+        connection.execute(
+            "UPDATE measurements SET timestamp = ? WHERE node_id = 'offline_node'", (stale,)
+        )
+    assert get_node_status("offline_node")["status"] == "offline"
+
+
+def test_recent_readings_returns_complete_dynamic_cycles(isolated_database):
+    from app.database import get_recent_measurements
+
+    sensors = [
+        "temperature", "humidity", "rssi", "uptime_seconds", "outside_temperature",
+        "outside_humidity", "outside_pressure", "enclosure_temperature",
+    ]
+    cycle_count = READING_LIMIT + 6
+    with sqlite3.connect(isolated_database) as connection:
+        connection.execute(
+            "INSERT INTO nodes (node_id, name, node_type, created_at) VALUES (?, ?, ?, ?)",
+            ("busy_node", "Busy Node", "esp32_wifi", "2026-01-01 00:00:00"),
+        )
+        node_db_id = connection.execute(
+            "SELECT id FROM nodes WHERE node_id = 'busy_node'"
+        ).fetchone()[0]
+        for cycle in range(cycle_count):
+            timestamp = f"2026-01-01 00:{cycle:02d}:00"
+            for offset, sensor in enumerate(sensors):
+                connection.execute(
+                    """INSERT INTO measurements
+                       (node_db_id, node_id, sensor_type, value, unit, timestamp)
+                       VALUES (?, 'busy_node', ?, ?, '', ?)""",
+                    (node_db_id, sensor, cycle * 100 + offset, timestamp),
+                )
+
+    readings = get_recent_measurements("busy_node")
+    assert len(readings) == READING_LIMIT
+    assert [row["timestamp"] for row in readings] == sorted(row["timestamp"] for row in readings)
+    assert readings[0]["timestamp"] == "2026-01-01 00:06:00"
+    for cycle, reading in enumerate(readings, start=6):
+        assert reading["node_id"] == "busy_node"
+        assert set(reading) == {"timestamp", "node_id", *sensors}
+        assert all(reading[sensor] == cycle * 100 + offset for offset, sensor in enumerate(sensors))
+
+
+def test_recent_readings_query_index_is_present_and_used(isolated_database):
+    with sqlite3.connect(isolated_database) as connection:
+        indexes = {row[1] for row in connection.execute("PRAGMA index_list(measurements)")}
+        plan = connection.execute("""
+            EXPLAIN QUERY PLAN
+            SELECT timestamp FROM measurements
+            WHERE node_id = ? ORDER BY timestamp DESC, id DESC
+        """, ("node",)).fetchall()
+    assert "idx_measurements_node_timestamp_id" in indexes
+    assert any("idx_measurements_node_timestamp_id" in row[3] for row in plan)
+
+
+def test_frontend_registry_and_selector_contract(client):
+    script = client.get("/static/script.js").get_data(as_text=True)
+    details_script = client.get("/static/node_details.js").get_data(as_text=True)
+    page = client.get("/nodes/missing").get_data(as_text=True)
+    assert "option.value = node.node_id" in script
+    assert 'node.name.trim()' in script
+    assert "nodeName || node.node_id" in script
+    assert "encodeURIComponent(selectedNodeId)" in script
+    assert 'id="editNode" class="button-primary" type="button" disabled' in page
+    assert "editButton.disabled = false" in details_script
+    assert "if (!currentNode) return;" in details_script
+    assert 'id="headerStatus"' not in page
+    assert 'id="statusDetails"' in page
+    assert 'id="nodeInformationPanel"' in page
+    assert 'id="editNode" class="button-primary"' in page
+    panel_start = page.index('id="nodeInformationPanel"')
+    node_information = page.index('id="nodeInformation"', panel_start)
+    edit_control = page.index('id="editNode"', node_information)
+    panel_end = page.index("</div>", edit_control)
+    assert panel_start < node_information < edit_control < panel_end
+    assert 'id="saveNode"' in page and 'id="cancelEdit"' in page
+    assert 'document.getElementById("nodeInformation").innerHTML' in details_script
+    assert "editButton.hidden = true" in details_script
+    assert "saveButton.hidden = false" in details_script
+    assert "cancelButton.hidden = false" in details_script
+    assert 'document.getElementById("headerStatus")' not in details_script

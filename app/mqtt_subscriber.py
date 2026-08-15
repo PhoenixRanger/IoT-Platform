@@ -6,7 +6,7 @@ from numbers import Real
 import paho.mqtt.client as mqtt
 
 from app.config import MQTT_HOST, MQTT_PORT, MQTT_TOPIC
-from app.database import init_db, save_measurements, update_node_metadata
+from app.database import init_db, save_measurements, update_device_metadata
 
 
 RECONNECT_DELAY_SECONDS = 5
@@ -23,8 +23,6 @@ SUPPORTED_SENSOR_TYPES = {
     "enclosure_pressure",
 }
 METADATA_FIELDS = {
-    "name",
-    "location",
     "node_type",
     "hardware_model",
     "hardware_revision",
@@ -128,7 +126,7 @@ def on_message(client, userdata, message):
         return
 
     try:
-        update_node_metadata(device_id, metadata)
+        update_device_metadata(device_id, metadata)
         saved = save_measurements(device_id, readings)
     except ValueError as error:
         logger.warning("MQTT reading validation failed: %s", error)

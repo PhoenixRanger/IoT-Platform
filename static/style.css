@@ -179,6 +179,74 @@ select {
     color: #d1d5db;
 }
 
+.status-disabled {
+    background: #78350f;
+    color: #fde68a;
+}
+
+.management-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 34px;
+    padding-top: 10px;
+}
+
+.node-information-panel {
+    display: flex;
+    flex-direction: column;
+}
+
+.node-information-panel .card {
+    box-sizing: border-box;
+    width: 100%;
+}
+
+button {
+    border: 0;
+    border-radius: 8px;
+    cursor: pointer;
+    padding: 9px 16px;
+}
+
+button:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+.button-primary {
+    background: #2563eb;
+    color: white;
+}
+
+.button-primary:hover:not(:disabled),
+.button-primary:focus-visible:not(:disabled) {
+    background: #1d4ed8;
+}
+
+.form-row {
+    display: grid;
+    gap: 6px;
+    margin-bottom: 12px;
+}
+
+.form-row label {
+    color: #9ca3af;
+}
+
+.form-row input:not([type="checkbox"]) {
+    border: 1px solid #4b5563;
+    border-radius: 8px;
+    padding: 9px;
+}
+
+.error-message {
+    background: #7f1d1d;
+    border-radius: 8px;
+    color: #fecaca;
+    padding: 12px;
+}
+
 .chart-card,
 .table-card {
     background: #1f2937;
