@@ -4,11 +4,14 @@ from flask import Blueprint, jsonify, request, render_template
 
 from app.config import DEFAULT_NODE_ID
 from app.database import (
+    get_capabilities,
+    get_node_capabilities,
     get_node_details,
     get_node_status,
     get_nodes,
     get_recent_measurements,
     save_measurements,
+    replace_expected_capabilities,
     update_node_registry,
 )
 
@@ -67,6 +70,28 @@ def readings():
 @routes.route("/api/nodes")
 def nodes():
     return jsonify(get_nodes())
+
+
+@routes.route("/api/capabilities")
+def capabilities():
+    return jsonify(get_capabilities())
+
+
+@routes.route("/api/nodes/<node_id>/capabilities", methods=["PUT"])
+def node_capabilities(node_id):
+    if get_node_capabilities(node_id) is None:
+        return jsonify({"error": "Node not found", "node_id": node_id}), 404
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or set(payload) != {"expected"}:
+        return jsonify({"error": "Request must contain only a complete expected set"}), 400
+    expected = payload["expected"]
+    if not isinstance(expected, list) or any(not isinstance(key, str) for key in expected):
+        return jsonify({"error": "expected must be a list of capability keys"}), 400
+    try:
+        replace_expected_capabilities(node_id, expected)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    return jsonify(get_node_capabilities(node_id))
 
 
 REGISTRY_FIELDS = {"name", "location", "category", "latitude", "longitude", "enabled"}

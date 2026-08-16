@@ -240,6 +240,17 @@ button:disabled {
     padding: 9px;
 }
 
+.capability-list {
+    list-style: none;
+    margin: 0 0 14px;
+    padding: 0;
+}
+
+.capability-list li { margin: 5px 0; }
+.capability-empty { color: #9ca3af; display: block; margin-bottom: 14px; }
+.capability-group { border: 1px solid #4b5563; border-radius: 8px; margin-bottom: 12px; }
+.capability-group label { display: block; margin: 8px 0; }
+
 .error-message {
     background: #7f1d1d;
     border-radius: 8px;

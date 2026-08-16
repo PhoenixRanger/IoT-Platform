@@ -180,3 +180,48 @@ def test_mqtt_cannot_overwrite_registry_metadata(isolated_database):
     assert node["firmware_version"] == "1.1.0"
     assert node["ota_hostname"] == "node-001"
     assert get_recent_measurements("node_001")[-1]["temperature"] == 21
+
+
+def test_capability_only_metadata_payload_is_parsed():
+    device_id, metadata, readings = parse({
+        "device_id": "node", "capabilities": ["wifi", "wifi", "temperature_measurement"]
+    })
+    assert device_id == "node"
+    assert metadata["capabilities"] == ["wifi", "temperature_measurement"]
+    assert readings == {}
+
+
+@pytest.mark.parametrize("capabilities", ["wifi", [1], [""], None])
+def test_malformed_capabilities_are_rejected(capabilities):
+    with pytest.raises(ValueError, match="capabilities"):
+        parse({"device_id": "node", "capabilities": capabilities, "rssi": -60})
+
+
+def test_mqtt_reported_capabilities_replace_without_changing_expected(isolated_database):
+    from types import SimpleNamespace
+    from app.database import get_node_capabilities, replace_expected_capabilities, save_measurements
+    from app.mqtt_subscriber import on_message
+    save_measurements("node", {"temperature": 20})
+    replace_expected_capabilities("node", ["temperature_measurement"])
+    for capabilities in [["temperature_measurement", "wifi"], ["humidity_measurement"]]:
+        message = SimpleNamespace(payload=json.dumps({
+            "device_id": "node", "capabilities": capabilities
+        }).encode(), topic="sensors/node/readings")
+        on_message(None, None, message)
+    comparison = get_node_capabilities("node")
+    assert [item["capability_key"] for item in comparison["expected"]] == ["temperature_measurement"]
+    assert [item["capability_key"] for item in comparison["reported"]] == ["humidity_measurement"]
+    assert comparison["reported_at"] is not None
+
+
+def test_unknown_mqtt_capability_keeps_previous_set_and_registry(isolated_database):
+    from types import SimpleNamespace
+    from app.database import get_capabilities, get_node_capabilities, replace_reported_capabilities
+    from app.mqtt_subscriber import on_message
+    replace_reported_capabilities("node", ["wifi"])
+    before = {item["capability_key"] for item in get_capabilities()}
+    on_message(None, None, SimpleNamespace(payload=json.dumps({
+        "device_id": "node", "capabilities": ["unregistered_capability"]
+    }).encode(), topic="sensors/node/readings"))
+    assert {item["capability_key"] for item in get_capabilities()} == before
+    assert [item["capability_key"] for item in get_node_capabilities("node")["reported"]] == ["wifi"]

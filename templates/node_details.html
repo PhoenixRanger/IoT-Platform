@@ -27,6 +27,19 @@
                 <section class="card"><h2>Runtime Status</h2><dl id="statusDetails" class="detail-list"></dl></section>
                 <section class="card"><h2>Hardware</h2><dl id="hardwareDetails" class="detail-list"></dl></section>
                 <section class="card"><h2>Firmware</h2><dl id="firmwareDetails" class="detail-list"></dl></section>
+                <div id="capabilitiesPanel" class="node-information-panel">
+                    <section class="card">
+                        <h2>Capabilities</h2>
+                        <div id="capabilityDetails"></div>
+                        <div id="capabilityEditor" hidden></div>
+                    </section>
+                    <div class="management-actions">
+                        <button id="editCapabilities" class="button-primary" type="button" disabled>Edit capabilities</button>
+                        <button id="saveCapabilities" type="button" hidden>Save</button>
+                        <button id="cancelCapabilities" type="button" hidden>Cancel</button>
+                        <span id="capabilityMessage" role="status"></span>
+                    </div>
+                </div>
             </div>
         </div>
         <p id="nodeError" class="error-message" hidden>Node information could not be loaded.</p>

@@ -17,6 +17,8 @@ const char* HARDWARE_REVISION = "prototype-a";
 const NodeIdentity IDENTITY = {NODE_ID, FIRMWARE_NAME, FIRMWARE_VERSION,
                                HARDWARE_MODEL, HARDWARE_REVISION, OTA_HOSTNAME};
 const unsigned long PUBLISH_INTERVAL_MS = 10000;
+const char* const CAPABILITIES[] = {
+    "temperature_measurement", "humidity_measurement", "wifi"};
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
 DHT dht(DHT_PIN, DHT_TYPE);
@@ -24,7 +26,12 @@ unsigned long lastPublish = 0;
 
 bool connectMqtt() {
   if (mqttClient.connected()) return true;
-  return mqttClient.connect(IDENTITY.nodeId);
+  if (!mqttClient.connect(IDENTITY.nodeId)) return false;
+  String topic = "sensors/" + String(IDENTITY.nodeId) + "/readings";
+  String metadata = capabilityMetadataJson(
+      IDENTITY, CAPABILITIES, sizeof(CAPABILITIES) / sizeof(CAPABILITIES[0]));
+  mqttClient.publish(topic.c_str(), metadata.c_str());
+  return true;
 }
 
 void setup() {

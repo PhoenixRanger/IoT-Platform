@@ -31,6 +31,19 @@ SENSOR_UNITS = {
     "ec": "mS/cm",
 }
 
+CAPABILITY_DEFINITIONS = (
+    ("temperature_measurement", "Temperature", "sensor", "Measures temperature."),
+    ("humidity_measurement", "Humidity", "sensor", "Measures relative humidity."),
+    ("pressure_measurement", "Pressure", "sensor", "Measures atmospheric pressure."),
+    ("soil_moisture_measurement", "Soil Moisture", "sensor", "Measures soil moisture."),
+    ("soil_temperature_measurement", "Soil Temperature", "sensor", "Measures soil temperature."),
+    ("relay_control", "Relay Control", "actuator", "Controls a relay output."),
+    ("pump_control", "Pump Control", "actuator", "Controls a pump."),
+    ("valve_control", "Valve Control", "actuator", "Controls a valve."),
+    ("wifi", "Wi-Fi", "communication", "Communicates over Wi-Fi."),
+    ("lorawan", "LoRaWAN", "communication", "Communicates over LoRaWAN."),
+)
+
 
 def get_connection():
     conn = sqlite3.connect(DB_NAME)
@@ -133,6 +146,56 @@ def init_db():
             FOREIGN KEY (node_db_id) REFERENCES nodes(id)
         )
     """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS capabilities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            capability_key TEXT NOT NULL UNIQUE,
+            display_name TEXT NOT NULL,
+            capability_class TEXT NOT NULL
+                CHECK (capability_class IN ('sensor', 'actuator', 'communication')),
+            description TEXT NOT NULL
+        )
+    """)
+    cur.executemany("""
+        INSERT INTO capabilities
+            (capability_key, display_name, capability_class, description)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(capability_key) DO UPDATE SET
+            display_name = excluded.display_name,
+            capability_class = excluded.capability_class,
+            description = excluded.description
+    """, CAPABILITY_DEFINITIONS)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS node_expected_capabilities (
+            node_db_id INTEGER NOT NULL,
+            capability_id INTEGER NOT NULL,
+            PRIMARY KEY (node_db_id, capability_id),
+            FOREIGN KEY (node_db_id) REFERENCES nodes(id) ON DELETE CASCADE,
+            FOREIGN KEY (capability_id) REFERENCES capabilities(id)
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS node_capability_reports (
+            node_db_id INTEGER PRIMARY KEY,
+            reported_at TEXT NOT NULL,
+            FOREIGN KEY (node_db_id) REFERENCES nodes(id) ON DELETE CASCADE
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS node_reported_capabilities (
+            node_db_id INTEGER NOT NULL,
+            capability_id INTEGER NOT NULL,
+            reported_at TEXT NOT NULL,
+            PRIMARY KEY (node_db_id, capability_id),
+            FOREIGN KEY (node_db_id) REFERENCES nodes(id) ON DELETE CASCADE,
+            FOREIGN KEY (capability_id) REFERENCES capabilities(id)
+        )
+    """)
+    cur.execute("""CREATE INDEX IF NOT EXISTS idx_expected_capability
+                   ON node_expected_capabilities (capability_id)""")
+    cur.execute("""CREATE INDEX IF NOT EXISTS idx_reported_capability
+                   ON node_reported_capabilities (capability_id)""")
 
     conn.commit()
     conn.close()
@@ -277,8 +340,128 @@ def get_node_details(node_id):
         "last_seen": status["last_update"],
         "rssi": get_latest_telemetry(node_id, "rssi"),
         "uptime_seconds": get_latest_telemetry(node_id, "uptime_seconds"),
+        "capabilities": get_node_capabilities(node_id),
     })
+    runtime_status = node["status"]
+    if runtime_status in {"disabled", "offline", "unknown"}:
+        node["health"] = runtime_status
+    else:
+        node["health"] = node["capabilities"]["state"]
     return node
+
+
+def get_capabilities():
+    """Return the small, system-owned capability registry."""
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT capability_key, display_name, capability_class, description
+        FROM capabilities
+        ORDER BY CASE capability_class WHEN 'sensor' THEN 1 WHEN 'actuator' THEN 2 ELSE 3 END,
+                 display_name
+    """).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def _validated_capability_ids(cur, capability_keys):
+    keys = list(dict.fromkeys(capability_keys))
+    if not keys:
+        return keys, {}
+    placeholders = ", ".join("?" for _ in keys)
+    rows = cur.execute(
+        f"SELECT id, capability_key FROM capabilities WHERE capability_key IN ({placeholders})",
+        keys,
+    ).fetchall()
+    ids = {key: capability_id for capability_id, key in rows}
+    unknown = sorted(set(keys) - set(ids))
+    if unknown:
+        raise ValueError(f"Unknown capability key(s): {', '.join(unknown)}")
+    return keys, ids
+
+
+def replace_expected_capabilities(node_id, capability_keys):
+    """Atomically replace server-owned expected capabilities."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        node = cur.execute("SELECT id FROM nodes WHERE node_id = ?", (node_id,)).fetchone()
+        if node is None:
+            return False
+        keys, ids = _validated_capability_ids(cur, capability_keys)
+        cur.execute("DELETE FROM node_expected_capabilities WHERE node_db_id = ?", node)
+        cur.executemany(
+            "INSERT INTO node_expected_capabilities (node_db_id, capability_id) VALUES (?, ?)",
+            [(node[0], ids[key]) for key in keys],
+        )
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def replace_reported_capabilities(node_id, capability_keys):
+    """Atomically replace a device-owned complete capability report."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        node_db_id = get_or_create_node(cur, node_id)
+        keys, ids = _validated_capability_ids(cur, capability_keys)
+        reported_at = now_string()
+        cur.execute("DELETE FROM node_reported_capabilities WHERE node_db_id = ?", (node_db_id,))
+        cur.executemany("""
+            INSERT INTO node_reported_capabilities
+                (node_db_id, capability_id, reported_at) VALUES (?, ?, ?)
+        """, [(node_db_id, ids[key], reported_at) for key in keys])
+        cur.execute("""
+            INSERT INTO node_capability_reports (node_db_id, reported_at) VALUES (?, ?)
+            ON CONFLICT(node_db_id) DO UPDATE SET reported_at = excluded.reported_at
+        """, (node_db_id, reported_at))
+        conn.commit()
+        return reported_at
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_node_capabilities(node_id):
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    node = conn.execute("SELECT id FROM nodes WHERE node_id = ?", (node_id,)).fetchone()
+    if node is None:
+        conn.close()
+        return None
+    definitions = {row["id"]: dict(row) for row in conn.execute("""
+        SELECT id, capability_key, display_name, capability_class, description
+        FROM capabilities
+    """)}
+    expected_ids = [row[0] for row in conn.execute(
+        "SELECT capability_id FROM node_expected_capabilities WHERE node_db_id = ?", (node[0],)
+    )]
+    reported_ids = [row[0] for row in conn.execute(
+        "SELECT capability_id FROM node_reported_capabilities WHERE node_db_id = ?", (node[0],)
+    )]
+    report = conn.execute(
+        "SELECT reported_at FROM node_capability_reports WHERE node_db_id = ?", (node[0],)
+    ).fetchone()
+    conn.close()
+    expected_set, reported_set = set(expected_ids), set(reported_ids)
+    ordered = lambda ids: sorted((definitions[item] for item in ids), key=lambda item: item["display_name"])
+    return {
+        "expected": ordered(expected_set),
+        "reported": ordered(reported_set),
+        "missing": ordered(expected_set - reported_set) if report else [],
+        "unexpected": ordered(reported_set - expected_set) if report else [],
+        "state": "unknown" if report is None else (
+            "capability_mismatch" if expected_set - reported_set else "healthy"
+        ),
+        "reported_at": report[0] if report else None,
+    }
 
 
 def save_measurements(node_id, readings):

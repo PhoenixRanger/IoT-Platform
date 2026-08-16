@@ -21,6 +21,9 @@ const char* HARDWARE_REVISION = "prototype-a";
 const NodeIdentity IDENTITY = {NODE_ID, FIRMWARE_NAME, FIRMWARE_VERSION,
                                HARDWARE_MODEL, HARDWARE_REVISION, OTA_HOSTNAME};
 const unsigned long PUBLISH_INTERVAL_MS = 10000;
+const char* const CAPABILITIES[] = {
+    "temperature_measurement", "humidity_measurement",
+    "pressure_measurement", "wifi"};
 const unsigned long MS8607_RECOVERY_INTERVAL_MS = 30000;
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
@@ -32,6 +35,16 @@ unsigned long lastMs8607RecoveryAttempt = 0;
 
 void appendReading(String& json, const char* name, float value) {
   if (!isnan(value) && !isinf(value)) json += ",\"" + String(name) + "\":" + String(value, 1);
+}
+
+bool connectMqtt() {
+  if (mqttClient.connected()) return true;
+  if (!mqttClient.connect(IDENTITY.nodeId)) return false;
+  String topic = "sensors/" + String(IDENTITY.nodeId) + "/readings";
+  String metadata = capabilityMetadataJson(
+      IDENTITY, CAPABILITIES, sizeof(CAPABILITIES) / sizeof(CAPABILITIES[0]));
+  mqttClient.publish(topic.c_str(), metadata.c_str());
+  return true;
 }
 
 void recoverMs8607IfNeeded() {
@@ -74,7 +87,7 @@ void loop() {
     return;
   }
   serviceOta();
-  if (!mqttClient.connected() && !mqttClient.connect(IDENTITY.nodeId)) { delay(250); return; }
+  if (!connectMqtt()) { delay(250); return; }
   mqttClient.loop();
   if (millis() - lastPublish < PUBLISH_INTERVAL_MS) { delay(10); return; }
   lastPublish = millis();

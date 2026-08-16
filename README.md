@@ -4,9 +4,9 @@ A Raspberry Pi + ESP32 environmental monitoring dashboard and early-stage agricu
 
 ## Current Version
 
-**v1.11.0 — Node Registry & Management Foundation**
+**v1.12.0 — Generic Capability Model**
 
-This release adds the first server-managed node registry interface while preserving stable node IDs, existing telemetry, and the lightweight Flask + SQLite architecture.
+This release adds a hardware-independent, system-defined capability registry, separate expected and device-reported capability sets, deterministic capability health, and node-management capability editing while preserving existing telemetry and the lightweight Flask + SQLite architecture.
 
 ## Features
 
@@ -15,6 +15,7 @@ This release adds the first server-managed node registry interface while preserv
 - Normalized SQLite measurements plus persistent node hardware/firmware metadata
 - Dynamic node/sensor selectors, cards, historical charts, node status, RSSI, and uptime
 - Editable node names, locations, categories, GPS coordinates, and administrative enabled state
+- Generic sensor, actuator, and communication capabilities with expected/reported comparison
 - Clickable dashboard status tile and `/nodes/<node_id>` node management details
 - PlatformIO USB and authenticated local Wi-Fi OTA firmware uploads
 - Flask APIs and Raspberry Pi systemd deployment
@@ -39,7 +40,7 @@ Firmware has independent semantic versions, unrelated to the platform release. F
 
 ## Data and MQTT
 
-Nodes publish flat JSON to `sensors/<device_id>/readings`. Existing payloads remain accepted. New firmware also reports `firmware_name`, `firmware_version`, `hardware_model`, `hardware_revision`, and `ota_hostname`. These strings update the existing `nodes` row and are never measurements; numeric readings, RSSI, and uptime continue through the existing measurement model.
+Nodes publish flat JSON to `sensors/<device_id>/readings`. Existing payloads remain accepted. New firmware reports its complete capability set on MQTT connection/reconnection and also reports `firmware_name`, `firmware_version`, `hardware_model`, `hardware_revision`, and `ota_hostname`. These strings update the existing `nodes` row and are never measurements; numeric readings, RSSI, and uptime continue through the existing measurement model.
 
 ```json
 {"device_id":"irrigation_controller_001","firmware_name":"irrigation-controller","firmware_version":"1.0.0","hardware_model":"heltec-wifi-lora-32-v3","hardware_revision":"prototype-a","ota_hostname":"irrigation-controller-001","outside_temperature":24.8,"rssi":-61,"uptime_seconds":418}
@@ -83,6 +84,8 @@ The OTA partition scheme is retained in every environment. Do not hardcode trans
 - `GET /` — dashboard
 - `POST /api/data` — HTTP fallback ingestion
 - `GET /api/nodes` — registered nodes
+- `GET /api/capabilities` — system capability registry
+- `PUT /api/nodes/<node_id>/capabilities` — replace expected capabilities
 - `GET /api/nodes/<node_id>` — metadata and calculated runtime state
 - `PATCH /api/nodes/<node_id>` — update name, location, category, GPS, or enabled state
 - `GET /api/readings?node_id=<node_id>` — readings
@@ -101,7 +104,7 @@ The simple anonymous Mosquitto configuration in the deployment guide is for deve
 
 ```bash
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 python run.py
 # separate shell/service
 python -m app.mqtt_subscriber
@@ -125,5 +128,6 @@ The public repository is intended to begin with the mature v1.10.1 working tree 
 - **v1.10.0** — independently versioned PlatformIO firmware, authenticated OTA, node metadata, and node details.
 - **v1.10.1** — sanitized initial-public-release baseline with no intended functional changes.
 - **v1.11.0** — node registry management, metadata ownership boundaries, and complete indexed recent reporting cycles.
+- **v1.12.0** — generic capability registry, expected/reported capability state, health, UI, and firmware reporting.
 
 Future work continues toward MQTT security, LoRaWAN, actuator and node management, and a dedicated Linux property server. See the architecture and operations documents for the current design and workflows.

@@ -9,7 +9,7 @@ ESP32 / Heltec firmware
              ↓
 MQTT subscriber / Flask ingestion
              ↓
-normalized SQLite nodes, sensors, measurements
+normalized SQLite nodes, sensors, measurements, capabilities
              ↓
 Flask APIs → dashboard and node-details page
 ```
@@ -26,4 +26,13 @@ The monorepo contains two independent PlatformIO projects: `environment-node` fo
 
 Each family has independent SemVer sourced from its `VERSION` file. Both formal histories begin at v1.0.0. A PlatformIO pre-build script exposes that value as `FIRMWARE_VERSION`.
 
-Authenticated ArduinoOTA is serviced continuously while connected. `min_spiffs.csv` provides an OTA-capable partition layout. USB remains bootstrap and recovery; there is no browser update, fleet automation, FUOTA, signing, or secure boot in v1.11.0.
+Authenticated ArduinoOTA is serviced continuously while connected. `min_spiffs.csv` provides an OTA-capable partition layout. USB remains bootstrap and recovery; there is no browser update, fleet automation, FUOTA, signing, or secure boot in v1.12.0.
+
+
+## Generic capabilities
+
+The system-owned `capabilities` registry defines stable functional keys classified as sensor, actuator, or communication. `node_expected_capabilities` stores operator-managed desired associations; `node_reported_capabilities` stores device-owned associations and `node_capability_reports` records the latest complete report even when it is empty. These tables are independent of node category, firmware family, and future physical component or pin models.
+
+Firmware publishes a complete `capabilities` array as a metadata-only message on startup and each MQTT reconnect. The subscriber validates every key before atomically replacing the reported set. An unknown key rejects the entire report and preserves the prior set. Legacy reading messages without capabilities remain unchanged.
+
+Capability state is `unknown` before any report, `capability_mismatch` when a reported set omits an expected key, and otherwise `healthy`; extra reported functions are informational. Overall health applies disabled, offline, and unknown runtime precedence before this capability state.

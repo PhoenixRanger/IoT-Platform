@@ -373,3 +373,104 @@ def test_frontend_registry_and_selector_contract(client):
     assert "saveButton.hidden = false" in details_script
     assert "cancelButton.hidden = false" in details_script
     assert 'document.getElementById("headerStatus")' not in details_script
+
+CAPABILITY_KEYS = {
+    "temperature_measurement", "humidity_measurement", "pressure_measurement",
+    "soil_moisture_measurement", "soil_temperature_measurement", "relay_control",
+    "pump_control", "valve_control", "wifi", "lorawan",
+}
+
+
+def test_capability_migration_seed_is_idempotent_and_preserves_nodes(isolated_database):
+    from app import database
+    database.save_measurements("legacy", {"temperature": 20})
+    database.init_db()
+    database.init_db()
+    with sqlite3.connect(isolated_database) as connection:
+        tables = {row[0] for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        rows = connection.execute(
+            "SELECT capability_key, capability_class FROM capabilities"
+        ).fetchall()
+        assert connection.execute("SELECT name FROM nodes WHERE node_id='legacy'").fetchone()
+    assert {"capabilities", "node_expected_capabilities", "node_reported_capabilities", "node_capability_reports"} <= tables
+    assert len(rows) == len(CAPABILITY_KEYS) == len({row[0] for row in rows})
+    assert {row[0] for row in rows} == CAPABILITY_KEYS
+    classes = dict(rows)
+    assert classes["temperature_measurement"] == "sensor"
+    assert classes["relay_control"] == "actuator"
+    assert classes["wifi"] == "communication"
+    assert not {"i2c", "spi", "uart", "gpio"} & set(classes)
+
+
+def test_capability_registry_api(client):
+    response = client.get("/api/capabilities")
+    assert response.status_code == 200
+    definitions = response.get_json()
+    assert {item["capability_key"] for item in definitions} == CAPABILITY_KEYS
+    assert all(set(item) == {"capability_key", "display_name", "capability_class", "description"} for item in definitions)
+
+
+def test_expected_capabilities_replace_deduplicate_empty_and_validate(client):
+    from app.database import replace_reported_capabilities, save_measurements
+    save_measurements("node", {"temperature": 20})
+    replace_reported_capabilities("node", ["temperature_measurement", "wifi"])
+    response = client.put("/api/nodes/node/capabilities", json={
+        "expected": ["temperature_measurement", "temperature_measurement", "humidity_measurement"]
+    })
+    assert response.status_code == 200
+    comparison = response.get_json()
+    assert [item["capability_key"] for item in comparison["expected"]] == ["humidity_measurement", "temperature_measurement"]
+    assert [item["capability_key"] for item in comparison["reported"]] == ["temperature_measurement", "wifi"]
+    assert comparison["state"] == "capability_mismatch"
+    assert [item["capability_key"] for item in comparison["missing"]] == ["humidity_measurement"]
+    assert [item["capability_key"] for item in comparison["unexpected"]] == ["wifi"]
+    assert client.put("/api/nodes/node/capabilities", json={"expected": []}).get_json()["state"] == "healthy"
+    assert client.put("/api/nodes/node/capabilities", json={"expected": ["unknown"]}).status_code == 400
+    assert client.put("/api/nodes/missing/capabilities", json={"expected": []}).status_code == 404
+
+
+@pytest.mark.parametrize("payload", [None, {}, {"expected": "wifi"}, {"expected": [1]}, {"expected": [], "extra": 1}])
+def test_expected_capability_api_validation(client, payload):
+    save_measurements("node", {"temperature": 20})
+    assert client.put("/api/nodes/node/capabilities", json=payload).status_code == 400
+
+
+def test_capability_comparison_and_health_precedence(client, isolated_database):
+    from app.database import replace_reported_capabilities
+    save_measurements("node", {"temperature": 20})
+    unknown = client.get("/api/nodes/node").get_json()
+    assert unknown["capabilities"]["state"] == "unknown"
+    assert unknown["health"] == "unknown"
+    client.put("/api/nodes/node/capabilities", json={"expected": ["temperature_measurement", "humidity_measurement"]})
+    replace_reported_capabilities("node", ["temperature_measurement", "wifi"])
+    mismatch = client.get("/api/nodes/node").get_json()
+    assert mismatch["health"] == "capability_mismatch"
+    client.put("/api/nodes/node/capabilities", json={"expected": ["temperature_measurement"]})
+    healthy = client.get("/api/nodes/node").get_json()
+    assert healthy["health"] == "healthy"
+    assert [item["capability_key"] for item in healthy["capabilities"]["unexpected"]] == ["wifi"]
+    client.patch("/api/nodes/node", json={"enabled": False})
+    assert client.get("/api/nodes/node").get_json()["health"] == "disabled"
+
+
+def test_empty_reported_set_is_known_and_can_mismatch(client):
+    from app.database import replace_reported_capabilities
+    save_measurements("node", {"temperature": 20})
+    client.put("/api/nodes/node/capabilities", json={"expected": ["wifi"]})
+    replace_reported_capabilities("node", [])
+    details = client.get("/api/nodes/node").get_json()
+    assert details["capabilities"]["reported_at"] is not None
+    assert details["capabilities"]["state"] == "capability_mismatch"
+
+
+def test_capability_ui_contract(client):
+    page = client.get("/nodes/missing").get_data(as_text=True)
+    script = client.get("/static/node_details.js").get_data(as_text=True)
+    for target in ["capabilityDetails", "capabilityEditor", "editCapabilities", "saveCapabilities", "cancelCapabilities"]:
+        assert f'id="{target}"' in page
+    assert "Sensors" in script and "Actuators" in script and "Communication" in script
+    assert 'name="expectedCapability"' in script
+    assert "/capabilities`" in script
+    assert page.index('id="nodeInformationPanel"') < page.index('id="capabilitiesPanel"')

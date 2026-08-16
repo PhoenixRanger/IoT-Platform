@@ -6,7 +6,12 @@ from numbers import Real
 import paho.mqtt.client as mqtt
 
 from app.config import MQTT_HOST, MQTT_PORT, MQTT_TOPIC
-from app.database import init_db, save_measurements, update_device_metadata
+from app.database import (
+    init_db,
+    replace_reported_capabilities,
+    save_measurements,
+    update_device_metadata,
+)
 
 
 RECONNECT_DELAY_SECONDS = 5
@@ -60,6 +65,14 @@ def parse_reading_payload(payload):
             raise ValueError(f"Invalid metadata value for {field}: {value}")
         metadata[field] = value.strip()
 
+    if "capabilities" in data:
+        capabilities = data["capabilities"]
+        if not isinstance(capabilities, list) or any(
+            not isinstance(key, str) or not key.strip() for key in capabilities
+        ):
+            raise ValueError("capabilities must be a list of non-empty strings")
+        metadata["capabilities"] = list(dict.fromkeys(key.strip() for key in capabilities))
+
     readings = {}
     for sensor_type in SUPPORTED_SENSOR_TYPES:
         if sensor_type not in data:
@@ -70,7 +83,7 @@ def parse_reading_payload(payload):
             raise ValueError(f"Invalid numeric value for {sensor_type}: {value}")
         readings[sensor_type] = value
 
-    if not readings:
+    if not readings and "capabilities" not in metadata:
         raise ValueError("Payload must contain at least one valid supported reading")
 
     return device_id.strip(), metadata, readings
@@ -126,8 +139,11 @@ def on_message(client, userdata, message):
         return
 
     try:
+        capabilities = metadata.pop("capabilities", None)
         update_device_metadata(device_id, metadata)
-        saved = save_measurements(device_id, readings)
+        if capabilities is not None:
+            replace_reported_capabilities(device_id, capabilities)
+        saved = save_measurements(device_id, readings) if readings else []
     except ValueError as error:
         logger.warning("MQTT reading validation failed: %s", error)
     except Exception:

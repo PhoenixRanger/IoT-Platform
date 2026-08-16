@@ -11,3 +11,14 @@ inline String metadataJson(const NodeIdentity& identity) {
   json += ",\"ota_hostname\":\"" + String(identity.otaHostname) + "\"";
   return json;
 }
+
+inline String capabilityMetadataJson(const NodeIdentity& identity,
+                                     const char* const capabilities[],
+                                     size_t capabilityCount) {
+  String json = metadataJson(identity) + ",\"capabilities\":[";
+  for (size_t i = 0; i < capabilityCount; ++i) {
+    if (i) json += ",";
+    json += "\"" + String(capabilities[i]) + "\"";
+  }
+  return json + "]}";
+}
