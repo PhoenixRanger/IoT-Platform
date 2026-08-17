@@ -6,6 +6,10 @@ body {
     padding: 30px;
 }
 
+[hidden] {
+    display: none !important;
+}
+
 .dashboard {
     max-width: 1200px;
     margin: 0 auto;
@@ -18,6 +22,26 @@ body {
 .header p {
     color: #9ca3af;
     margin-bottom: 30px;
+}
+
+.header-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: start;
+    gap: 20px;
+}
+
+.button-link {
+    border-radius: 8px;
+    display: inline-block;
+    padding: 9px 16px;
+    text-align: center;
+    text-decoration: none;
+}
+
+.button-secondary {
+    background: #374151;
+    color: white;
 }
 
 .controls {
@@ -214,6 +238,77 @@ button:disabled {
     opacity: 0.5;
 }
 
+.fleet-controls {
+    align-items: center;
+    background: #1f2937;
+    border-radius: 14px;
+    display: flex;
+    gap: 12px;
+    margin-bottom: 20px;
+    padding: 16px;
+}
+
+.search-field {
+    flex: 1;
+}
+
+.search-field input {
+    background: white;
+    border: 1px solid #4b5563;
+    border-radius: 8px;
+    box-sizing: border-box;
+    min-width: 220px;
+    padding: 9px 12px;
+    width: 100%;
+}
+
+.selection-toolbar,
+.fleet-actions {
+    align-items: center;
+    display: flex;
+    gap: 10px;
+}
+
+.fleet-table-card {
+    background: #1f2937;
+    border-radius: 14px;
+    overflow-x: auto;
+    padding: 8px 20px 16px;
+}
+
+.fleet-table { margin-top: 0; }
+.fleet-table td { vertical-align: middle; }
+.fleet-table strong,
+.fleet-table small { display: block; }
+.fleet-table small { color: #9ca3af; margin-top: 4px; }
+.selection-column { box-sizing: border-box; width: 42px; }
+.fleet-health { white-space: nowrap; }
+.fleet-empty { color: #9ca3af; text-align: center; }
+
+.status-indicator {
+    background: #6b7280;
+    border-radius: 50%;
+    display: inline-block;
+    height: 10px;
+    margin-right: 8px;
+    width: 10px;
+}
+
+.status-indicator-online { background: #22c55e; }
+.status-indicator-disabled { background: #eab308; }
+.status-indicator-offline { background: #ef4444; }
+.status-indicator-unknown { background: #6b7280; }
+
+.visually-hidden {
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    height: 1px;
+    overflow: hidden;
+    position: absolute;
+    white-space: nowrap;
+    width: 1px;
+}
+
 .button-primary {
     background: #2563eb;
     color: white;
@@ -300,6 +395,17 @@ th {
         align-items: stretch;
         flex-direction: column;
     }
+
+    .header-actions,
+    .fleet-controls {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .search-field input { min-width: 0; }
+    .fleet-table th:nth-child(3),
+    .fleet-table td:nth-child(3) { display: none; }
+    .fleet-actions { align-items: stretch; flex-direction: column; }
 
     select,
     .card {

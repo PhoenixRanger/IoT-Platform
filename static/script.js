@@ -85,7 +85,9 @@ async function loadNodes() {
     });
 
     if (nodes.length > 0) {
-        selectedNodeId = selectedNodeId || nodes[0].node_id;
+        const requestedNodeId = new URLSearchParams(window.location.search).get("node_id");
+        const requestedNodeExists = nodes.some(node => node.node_id === requestedNodeId);
+        selectedNodeId = selectedNodeId || (requestedNodeExists ? requestedNodeId : nodes[0].node_id);
         nodeSelect.value = selectedNodeId;
     }
 }

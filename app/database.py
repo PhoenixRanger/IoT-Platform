@@ -342,12 +342,79 @@ def get_node_details(node_id):
         "uptime_seconds": get_latest_telemetry(node_id, "uptime_seconds"),
         "capabilities": get_node_capabilities(node_id),
     })
-    runtime_status = node["status"]
-    if runtime_status in {"disabled", "offline", "unknown"}:
-        node["health"] = runtime_status
-    else:
-        node["health"] = node["capabilities"]["state"]
+    node["health"] = calculate_node_health(
+        node["status"], node["capabilities"]["state"]
+    )
     return node
+
+
+def calculate_node_health(runtime_status, capability_state):
+    """Apply the shared runtime precedence used by details and fleet views."""
+    if runtime_status in {"disabled", "offline", "unknown"}:
+        return runtime_status
+    return capability_state
+
+
+def _runtime_status(enabled, latest_timestamp, offline_threshold_seconds=60):
+    if not bool(enabled):
+        return "disabled"
+    if latest_timestamp is None:
+        return "unknown"
+    latest_datetime = datetime.strptime(latest_timestamp, "%Y-%m-%d %H:%M:%S")
+    age_seconds = (datetime.now() - latest_datetime).total_seconds()
+    return "online" if age_seconds <= offline_threshold_seconds else "offline"
+
+
+def get_nodes_overview(offline_threshold_seconds=60):
+    """Return compact fleet state using one connection and bounded index lookups.
+
+    The correlated latest-timestamp lookup seeks once per registered node through
+    idx_measurements_node_timestamp_id rather than grouping telemetry history.
+    Capability state is calculated from the normalized expected/reported sets.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT n.id, n.node_id, n.name, n.enabled,
+               (SELECT m.timestamp
+                FROM measurements AS m
+                WHERE m.node_id = n.node_id
+                ORDER BY m.timestamp DESC, m.id DESC
+                LIMIT 1) AS latest_timestamp,
+               EXISTS (
+                   SELECT 1 FROM node_capability_reports AS reports
+                   WHERE reports.node_db_id = n.id
+               ) AS has_report,
+               EXISTS (
+                   SELECT 1 FROM node_expected_capabilities AS expected
+                   WHERE expected.node_db_id = n.id
+                     AND NOT EXISTS (
+                         SELECT 1 FROM node_reported_capabilities AS reported
+                         WHERE reported.node_db_id = n.id
+                           AND reported.capability_id = expected.capability_id
+                     )
+               ) AS has_missing_capability
+        FROM nodes AS n
+        ORDER BY n.node_id ASC
+    """).fetchall()
+    conn.close()
+
+    overview = []
+    for row in rows:
+        status = _runtime_status(
+            row["enabled"], row["latest_timestamp"], offline_threshold_seconds
+        )
+        capability_state = (
+            "unknown" if not row["has_report"] else
+            "capability_mismatch" if row["has_missing_capability"] else "healthy"
+        )
+        overview.append({
+            "node_id": row["node_id"],
+            "name": row["name"],
+            "status": status,
+            "health": calculate_node_health(status, capability_state),
+        })
+    return overview
 
 
 def get_capabilities():
@@ -539,27 +606,12 @@ def get_node_status(node_id, offline_threshold_seconds=60):
     row = cur.fetchone()
     conn.close()
 
-    if node is not None and not bool(node[0]):
-        return {
-            "node_id": node_id,
-            "status": "disabled",
-            "last_update": row[0] if row else None,
-            "offline_threshold_seconds": offline_threshold_seconds
-        }
-
-    if row is None:
-        return {
-            "node_id": node_id,
-            "status": "unknown",
-            "last_update": None,
-            "offline_threshold_seconds": offline_threshold_seconds
-        }
-
-    latest_timestamp = row[0]
-    latest_datetime = datetime.strptime(latest_timestamp, "%Y-%m-%d %H:%M:%S")
-    age_seconds = (datetime.now() - latest_datetime).total_seconds()
-    status = "online" if age_seconds <= offline_threshold_seconds else "offline"
-
+    latest_timestamp = row[0] if row else None
+    status = _runtime_status(
+        node[0] if node is not None else True,
+        latest_timestamp,
+        offline_threshold_seconds,
+    )
     return {
         "node_id": node_id,
         "status": status,

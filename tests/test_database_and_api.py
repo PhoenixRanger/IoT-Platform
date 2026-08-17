@@ -474,3 +474,102 @@ def test_capability_ui_contract(client):
     assert 'name="expectedCapability"' in script
     assert "/capabilities`" in script
     assert page.index('id="nodeInformationPanel"') < page.index('id="capabilitiesPanel"')
+
+
+def test_fleet_page_and_dashboard_navigation(client):
+    fleet_page = client.get("/nodes")
+    assert fleet_page.status_code == 200
+    assert b"All Nodes" in fleet_page.data
+    assert b"Fleet registry and node navigation" in fleet_page.data
+    assert b"/static/nodes.js" in fleet_page.data
+    dashboard = client.get("/")
+    assert dashboard.status_code == 200
+    assert b'href="/nodes">All Nodes</a>' in dashboard.data
+
+
+def test_fleet_overview_runtime_and_health_semantics(client, isolated_database):
+    from app.database import get_or_create_node, replace_reported_capabilities
+
+    for node_id in ("unknown", "disabled"):
+        with sqlite3.connect(isolated_database) as connection:
+            get_or_create_node(connection.cursor(), node_id, name=node_id.title())
+            connection.commit()
+    save_measurements("online", {"temperature": 20})
+    save_measurements("offline", {"temperature": 20})
+    save_measurements("mismatch", {"temperature": 20})
+    client.patch("/api/nodes/online", json={"name": "Weather Station"})
+    client.patch("/api/nodes/disabled", json={"enabled": False})
+    client.put("/api/nodes/online/capabilities", json={"expected": []})
+    replace_reported_capabilities("online", [])
+    client.put("/api/nodes/mismatch/capabilities", json={"expected": ["wifi"]})
+    replace_reported_capabilities("mismatch", [])
+    stale = (datetime.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+    with sqlite3.connect(isolated_database) as connection:
+        connection.execute(
+            "UPDATE measurements SET timestamp = ? WHERE node_id = 'offline'", (stale,)
+        )
+
+    response = client.get("/api/nodes/overview")
+    assert response.status_code == 200
+    nodes = {node["node_id"]: node for node in response.get_json()}
+    assert nodes["online"] == {
+        "node_id": "online", "name": "Weather Station",
+        "status": "online", "health": "healthy",
+    }
+    assert (nodes["offline"]["status"], nodes["offline"]["health"]) == ("offline", "offline")
+    assert (nodes["disabled"]["status"], nodes["disabled"]["health"]) == ("disabled", "disabled")
+    assert (nodes["unknown"]["status"], nodes["unknown"]["health"]) == ("unknown", "unknown")
+    assert (nodes["mismatch"]["status"], nodes["mismatch"]["health"]) == (
+        "online", "capability_mismatch",
+    )
+
+    # The dedicated overview does not enlarge or rename the existing registry API.
+    registry = {node["node_id"]: node for node in client.get("/api/nodes").get_json()}
+    assert "status" not in registry["online"] and "health" not in registry["online"]
+    assert client.get("/nodes/online").status_code == 200
+
+
+def test_fleet_latest_state_query_is_index_backed_and_history_bounded(isolated_database):
+    from app.database import get_nodes_overview, get_or_create_node
+
+    with sqlite3.connect(isolated_database) as connection:
+        node_db_id = get_or_create_node(connection.cursor(), "history", name="History")
+        for item in range(2000):
+            connection.execute(
+                """INSERT INTO measurements
+                   (node_db_id, node_id, sensor_type, value, unit, timestamp)
+                   VALUES (?, 'history', 'temperature', ?, '°C', ?)""",
+                (node_db_id, item, f"2020-01-01 00:{item % 60:02d}:00"),
+            )
+        latest = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        connection.execute(
+            """INSERT INTO measurements
+               (node_db_id, node_id, sensor_type, value, unit, timestamp)
+               VALUES (?, 'history', 'temperature', 20, '°C', ?)""",
+            (node_db_id, latest),
+        )
+        plan = connection.execute("""
+            EXPLAIN QUERY PLAN
+            SELECT n.node_id,
+                   (SELECT m.timestamp FROM measurements AS m
+                    WHERE m.node_id = n.node_id
+                    ORDER BY m.timestamp DESC, m.id DESC LIMIT 1)
+            FROM nodes AS n
+        """).fetchall()
+    assert get_nodes_overview()[0]["status"] == "online"
+    assert any(
+        "idx_measurements_node_timestamp_id" in row[3] and "SEARCH m" in row[3]
+        for row in plan
+    )
+
+
+def test_dashboard_query_parameter_and_fleet_javascript_contract(client):
+    dashboard_script = client.get("/static/script.js").get_data(as_text=True)
+    fleet_script = client.get("/static/nodes.js").get_data(as_text=True)
+    assert 'new URLSearchParams(window.location.search).get("node_id")' in dashboard_script
+    assert "nodes.some(node => node.node_id === requestedNodeId)" in dashboard_script
+    assert "const selectedNodeIds = new Set()" in fleet_script
+    assert "visibleNodes()" in fleet_script
+    assert "encodeURIComponent(node.node_id)" in fleet_script
+    assert "selectedNodeIds.clear()" in fleet_script
+    assert "FLEET_REFRESH_INTERVAL_MS = 10000" in fleet_script

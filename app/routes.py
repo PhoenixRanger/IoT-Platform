@@ -7,6 +7,7 @@ from app.database import (
     get_capabilities,
     get_node_capabilities,
     get_node_details,
+    get_nodes_overview,
     get_node_status,
     get_nodes,
     get_recent_measurements,
@@ -22,6 +23,11 @@ routes = Blueprint("routes", __name__)
 @routes.route("/")
 def home():
     return render_template("index.html")
+
+
+@routes.route("/nodes")
+def nodes_page():
+    return render_template("nodes.html")
 
 
 @routes.route("/nodes/<node_id>")
@@ -70,6 +76,11 @@ def readings():
 @routes.route("/api/nodes")
 def nodes():
     return jsonify(get_nodes())
+
+
+@routes.route("/api/nodes/overview")
+def nodes_overview():
+    return jsonify(get_nodes_overview())
 
 
 @routes.route("/api/capabilities")

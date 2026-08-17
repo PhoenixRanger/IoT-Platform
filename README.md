@@ -4,9 +4,9 @@ A Raspberry Pi + ESP32 environmental monitoring dashboard and early-stage agricu
 
 ## Current Version
 
-**v1.12.0 — Generic Capability Model**
+**v1.13.0 — Fleet Registry & Node Navigation**
 
-This release adds a hardware-independent, system-defined capability registry, separate expected and device-reported capability sets, deterministic capability health, and node-management capability editing while preserving existing telemetry and the lightweight Flask + SQLite architecture.
+This release adds a compact fleet registry with backend-calculated runtime health, live name/ID search, node selection infrastructure, and direct dashboard/details navigation while preserving existing telemetry and the lightweight Flask + SQLite architecture.
 
 ## Features
 
@@ -17,6 +17,7 @@ This release adds a hardware-independent, system-defined capability registry, se
 - Editable node names, locations, categories, GPS coordinates, and administrative enabled state
 - Generic sensor, actuator, and communication capabilities with expected/reported comparison
 - Clickable dashboard status tile and `/nodes/<node_id>` node management details
+- Compact `/nodes` fleet registry with search, selection, and node navigation
 - PlatformIO USB and authenticated local Wi-Fi OTA firmware uploads
 - Flask APIs and Raspberry Pi systemd deployment
 
@@ -84,6 +85,7 @@ The OTA partition scheme is retained in every environment. Do not hardcode trans
 - `GET /` — dashboard
 - `POST /api/data` — HTTP fallback ingestion
 - `GET /api/nodes` — registered nodes
+- `GET /api/nodes/overview` — compact fleet runtime and health overview
 - `GET /api/capabilities` — system capability registry
 - `PUT /api/nodes/<node_id>/capabilities` — replace expected capabilities
 - `GET /api/nodes/<node_id>` — metadata and calculated runtime state
@@ -91,6 +93,7 @@ The OTA partition scheme is retained in every environment. Do not hardcode trans
 - `GET /api/readings?node_id=<node_id>` — readings
 - `GET /api/node-status?node_id=<node_id>` — compatible status endpoint
 - `GET /nodes/<node_id>` — node-details page
+- `GET /nodes` — fleet registry and node navigation
 
 Status is disabled when administratively disabled; otherwise it is online when the latest measurement is at most 60 seconds old, offline when older, and unknown with no measurements. Missing metadata is returned as `null`.
 
@@ -129,5 +132,6 @@ The public repository is intended to begin with the mature v1.10.1 working tree 
 - **v1.10.1** — sanitized initial-public-release baseline with no intended functional changes.
 - **v1.11.0** — node registry management, metadata ownership boundaries, and complete indexed recent reporting cycles.
 - **v1.12.0** — generic capability registry, expected/reported capability state, health, UI, and firmware reporting.
+- **v1.13.0** — fleet registry, search and selection foundation, and direct node navigation.
 
 Future work continues toward MQTT security, LoRaWAN, actuator and node management, and a dedicated Linux property server. See the architecture and operations documents for the current design and workflows.
