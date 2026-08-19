@@ -4,6 +4,14 @@ let selectedSensor = null;
 
 const REFRESH_INTERVAL_MS = 5000;
 
+function updateNodeNavigation() {
+    if (!selectedNodeId) return;
+    const encodedNodeId = encodeURIComponent(selectedNodeId);
+    document.getElementById("dashboardTab").href = `/?node_id=${encodedNodeId}`;
+    document.getElementById("detailsTab").href = `/nodes/${encodedNodeId}`;
+    document.getElementById("technicalTab").href = `/nodes/${encodedNodeId}/technical`;
+}
+
 function formatSensorName(sensorType) {
     const labels = {
         outside_temperature: "Outside Temperature",
@@ -89,6 +97,7 @@ async function loadNodes() {
         const requestedNodeExists = nodes.some(node => node.node_id === requestedNodeId);
         selectedNodeId = selectedNodeId || (requestedNodeExists ? requestedNodeId : nodes[0].node_id);
         nodeSelect.value = selectedNodeId;
+        updateNodeNavigation();
     }
 }
 
@@ -304,6 +313,7 @@ async function initializeDashboard() {
     document.getElementById("nodeSelect").addEventListener("change", async function(event) {
         selectedNodeId = event.target.value;
         selectedSensor = null;
+        updateNodeNavigation();
         await loadReadings();
     });
 

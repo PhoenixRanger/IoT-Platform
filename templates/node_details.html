@@ -1,49 +1,9 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Node Details — Pi IoT Dashboard</title>
-    <link rel="stylesheet" href="/static/style.css">
-</head>
-<body>
-    <main class="dashboard">
-        <header class="header details-header">
-            <div>
-                <h1 id="nodeHeading">Node details</h1>
-                <p><strong id="nodeTechnicalId">{{ node_id }}</strong> — permanent technical identifier</p>
-            </div>
-            <a class="back-link" href="/">← Dashboard</a>
-        </header>
-        <div id="nodeDetails" data-node-id="{{ node_id }}">
-            <div class="details-grid">
-                <div id="nodeInformationPanel" class="node-information-panel">
-                    <section class="card"><h2>Node Information</h2><dl id="nodeInformation" class="detail-list"></dl></section>
-                    <div class="management-actions">
-                        <button id="editNode" class="button-primary" type="button" disabled>Edit</button>
-                        <button id="saveNode" type="button" hidden>Save</button>
-                        <button id="cancelEdit" type="button" hidden>Cancel</button>
-                        <span id="saveMessage" role="status"></span>
-                    </div>
-                </div>
-                <section class="card"><h2>Runtime Status</h2><dl id="statusDetails" class="detail-list"></dl></section>
-                <section class="card"><h2>Hardware</h2><dl id="hardwareDetails" class="detail-list"></dl></section>
-                <section class="card"><h2>Firmware</h2><dl id="firmwareDetails" class="detail-list"></dl></section>
-                <div id="capabilitiesPanel" class="node-information-panel">
-                    <section class="card">
-                        <h2>Capabilities</h2>
-                        <div id="capabilityDetails"></div>
-                        <div id="capabilityEditor" hidden></div>
-                    </section>
-                    <div class="management-actions">
-                        <button id="editCapabilities" class="button-primary" type="button" disabled>Edit capabilities</button>
-                        <button id="saveCapabilities" type="button" hidden>Save</button>
-                        <button id="cancelCapabilities" type="button" hidden>Cancel</button>
-                        <span id="capabilityMessage" role="status"></span>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <p id="nodeError" class="error-message" hidden>Node information could not be loaded.</p>
-    </main>
-    <script src="/static/node_details.js"></script>
-</body>
-</html>
+<!DOCTYPE html><html><head><title>Node Details — Pi IoT Dashboard</title><link rel="stylesheet" href="/static/style.css"></head><body><main class="dashboard">
+<header class="header details-header"><div><h1 id="nodeHeading">Node Details</h1><p><strong id="nodeTechnicalId">{{ node_id }}</strong> — permanent technical identifier</p></div><a class="back-link" href="/nodes">← All Nodes</a></header>
+<nav class="node-tabs" aria-label="Node views"><a href="/?node_id={{ node_id|urlencode }}">Dashboard</a><a class="active" href="/nodes/{{ node_id|urlencode }}">Details</a><a href="/nodes/{{ node_id|urlencode }}/technical">Technical</a></nav>
+<div id="nodeDetails" data-node-id="{{ node_id }}"><div class="details-grid">
+<div id="nodeInformationPanel" class="node-information-panel"><section class="card"><h2>Node Information</h2><dl id="nodeInformation" class="detail-list"></dl></section><div class="management-actions"><button id="editNode" class="button-primary" type="button" disabled>Edit</button><button id="saveNode" type="button" hidden>Save</button><button id="cancelEdit" type="button" hidden>Cancel</button><span id="saveMessage" role="status"></span></div></div>
+<section id="organization" class="card organization-card"><h2>Organization</h2><h3>Groups</h3><div id="nodeGroups"></div><button id="addGroup" type="button">+ Add Group</button><h3>Tags</h3><div id="nodeTags"></div><button id="addTag" type="button">+ Add Tag</button><p id="organizationMessage" role="status"></p></section>
+</div></div><p id="nodeError" class="error-message" hidden>Node information could not be loaded.</p>
+<dialog id="membershipDialog"><form id="membershipForm"><h2 id="membershipTitle"></h2><div id="membershipChoices"></div><p id="membershipError" class="error-message" role="alert"></p><div class="dialog-actions"><button value="cancel" formmethod="dialog">Cancel</button><button class="button-primary" type="submit">Add</button></div></form></dialog>
+</main><script src="/static/node_details.js"></script></body></html>

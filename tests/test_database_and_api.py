@@ -179,8 +179,9 @@ def test_node_details_page_and_clickable_dashboard_status(client):
     save_measurements("node_001", {"temperature": 20})
     page = client.get("/nodes/node_001")
     assert page.status_code == 200
-    assert b"Node details" in page.data
-    assert b"Firmware" in page.data
+    assert b"Node Details" in page.data
+    assert b"Organization" in page.data
+    assert client.get("/nodes/node_001/technical").status_code == 200
     script = client.get("/static/script.js")
     assert b"card-link" in script.data
     assert b"/nodes/" in script.data
@@ -357,9 +358,8 @@ def test_frontend_registry_and_selector_contract(client):
     assert "encodeURIComponent(selectedNodeId)" in script
     assert 'id="editNode" class="button-primary" type="button" disabled' in page
     assert "editButton.disabled = false" in details_script
-    assert "if (!currentNode) return;" in details_script
     assert 'id="headerStatus"' not in page
-    assert 'id="statusDetails"' in page
+    assert 'id="organization"' in page
     assert 'id="nodeInformationPanel"' in page
     assert 'id="editNode" class="button-primary"' in page
     panel_start = page.index('id="nodeInformationPanel"')
@@ -368,7 +368,7 @@ def test_frontend_registry_and_selector_contract(client):
     panel_end = page.index("</div>", edit_control)
     assert panel_start < node_information < edit_control < panel_end
     assert 'id="saveNode"' in page and 'id="cancelEdit"' in page
-    assert 'document.getElementById("nodeInformation").innerHTML' in details_script
+    assert 'document.getElementById("nodeInformation").replaceChildren' in details_script
     assert "editButton.hidden = true" in details_script
     assert "saveButton.hidden = false" in details_script
     assert "cancelButton.hidden = false" in details_script
@@ -466,14 +466,14 @@ def test_empty_reported_set_is_known_and_can_mismatch(client):
 
 
 def test_capability_ui_contract(client):
-    page = client.get("/nodes/missing").get_data(as_text=True)
-    script = client.get("/static/node_details.js").get_data(as_text=True)
+    page = client.get("/nodes/missing/technical").get_data(as_text=True)
+    script = client.get("/static/node_technical.js").get_data(as_text=True)
     for target in ["capabilityDetails", "capabilityEditor", "editCapabilities", "saveCapabilities", "cancelCapabilities"]:
         assert f'id="{target}"' in page
     assert "Sensors" in script and "Actuators" in script and "Communication" in script
-    assert 'name="expectedCapability"' in script
+    assert 'checkbox.name = "expectedCapability"' in script
     assert "/capabilities`" in script
-    assert page.index('id="nodeInformationPanel"') < page.index('id="capabilitiesPanel"')
+    assert 'id="capabilitiesPanel"' in page
 
 
 def test_fleet_page_and_dashboard_navigation(client):
@@ -512,7 +512,7 @@ def test_fleet_overview_runtime_and_health_semantics(client, isolated_database):
     response = client.get("/api/nodes/overview")
     assert response.status_code == 200
     nodes = {node["node_id"]: node for node in response.get_json()}
-    assert nodes["online"] == {
+    assert {key: nodes["online"][key] for key in ("node_id", "name", "status", "health")} == {
         "node_id": "online", "name": "Weather Station",
         "status": "online", "health": "healthy",
     }

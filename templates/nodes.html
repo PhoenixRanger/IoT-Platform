@@ -1,43 +1,14 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>All Nodes — Pi IoT Dashboard</title>
-    <link rel="stylesheet" href="/static/style.css">
-</head>
-<body>
-    <main class="dashboard">
-        <header class="header details-header">
-            <div>
-                <h1>All Nodes</h1>
-                <p>Fleet registry and node navigation</p>
-            </div>
-            <a class="back-link" href="/">Dashboard</a>
-        </header>
-
-        <section class="fleet-controls" aria-label="Fleet controls">
-            <label class="search-field" for="nodeSearch">
-                <span class="visually-hidden">Search nodes</span>
-                <input id="nodeSearch" type="search" placeholder="Search nodes..." autocomplete="off">
-            </label>
-            <div id="selectionToolbar" class="selection-toolbar" hidden>
-                <button id="selectAllNodes" type="button">Select All</button>
-                <span id="selectionCount" aria-live="polite">0 nodes selected</span>
-            </div>
-            <button id="toggleSelection" class="button-primary" type="button">Select Nodes</button>
-        </section>
-
-        <p id="fleetError" class="error-message" hidden>Fleet state could not be refreshed. Existing values will remain visible.</p>
-        <section class="fleet-table-card">
-            <table class="fleet-table">
-                <thead><tr>
-                    <th class="selection-column" hidden><span class="visually-hidden">Select</span></th>
-                    <th>Node</th><th>Tags / Groups</th><th>Health</th><th>Actions</th>
-                </tr></thead>
-                <tbody id="fleetRows"></tbody>
-            </table>
-            <p id="emptyFleet" class="fleet-empty" hidden>No matching nodes.</p>
-        </section>
-    </main>
-    <script src="/static/nodes.js"></script>
-</body>
-</html>
+<!DOCTYPE html><html><head><title>All Nodes — Pi IoT Dashboard</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><main class="dashboard">
+<header class="header details-header"><div><h1>All Nodes</h1><p>Fleet registry and node navigation</p></div><div class="header-actions fleet-header-actions"><a class="button-link button-secondary" href="/fleet/organization">Manage Groups &amp; Tags</a><a class="button-link button-primary" href="/">Dashboard</a></div></header>
+<section class="fleet-controls" aria-label="Fleet controls">
+ <label class="search-field" for="nodeSearch"><span class="visually-hidden">Search nodes</span><input id="nodeSearch" type="search" placeholder="Search nodes..." autocomplete="off"></label>
+ <div id="filterControl" class="menu-wrap"><button id="toggleFilters" type="button" aria-expanded="false">Filters ▾</button><div id="filterPanel" class="filter-panel transient-menu" hidden></div></div>
+ <button id="toggleSelection" class="button-primary" type="button">Select Nodes</button>
+</section>
+<div id="activeFilters" class="filter-chips" aria-live="polite"></div>
+<section id="selectionToolbar" class="selection-toolbar" hidden><span id="selectionCount" aria-live="polite">0 selected</span><button id="selectAllNodes" type="button">Select All</button><button id="unselectAllNodes" type="button">Unselect All</button><div class="menu-wrap"><button id="toggleBulkMenu" type="button" aria-expanded="false">Bulk Action ▾</button><div id="bulkMenu" class="action-menu transient-menu" hidden><button data-action="add-group">Add to Group</button><button data-action="remove-group">Remove from Group</button><button data-action="add-tag">Apply Tag</button><button data-action="remove-tag">Remove Tag</button></div></div></section>
+<p id="fleetError" class="error-message" hidden>Fleet state could not be refreshed. Existing values will remain visible.</p>
+<section class="fleet-table-card"><table class="fleet-table"><thead><tr><th class="selection-column" hidden><span class="visually-hidden">Select</span></th><th>Node</th><th>Groups</th><th>Tags</th><th>Health</th><th class="fleet-menu-column"><span class="visually-hidden">Node menu</span></th></tr></thead><tbody id="fleetRows"></tbody></table><div id="emptyFleet" class="fleet-empty" hidden><p>No nodes match the current search and filters.</p><button id="clearEmptyFilters" type="button">Clear filters</button></div></section>
+<dialog id="bulkDialog"><form id="bulkForm"><h2 id="bulkTitle">Bulk Action</h2><div id="bulkChoices"></div><p id="bulkError" class="error-message" role="alert"></p><div class="dialog-actions"><button id="cancelBulk" type="button">Cancel</button><button class="button-primary" type="submit">Apply</button></div></form></dialog>
+</main><script src="/static/nodes.js"></script></body></html>

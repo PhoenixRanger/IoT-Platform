@@ -197,6 +197,37 @@ def init_db():
     cur.execute("""CREATE INDEX IF NOT EXISTS idx_reported_capability
                    ON node_reported_capabilities (capability_id)""")
 
+    # Human-owned fleet organization is deliberately independent from node
+    # identity, capabilities, and the legacy category field.
+    for table in ("groups", "tags"):
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS {table} (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL COLLATE NOCASE UNIQUE
+                    CHECK (length(trim(name)) > 0)
+            )
+        """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS node_groups (
+            node_db_id INTEGER NOT NULL,
+            group_id INTEGER NOT NULL,
+            PRIMARY KEY (node_db_id, group_id),
+            FOREIGN KEY (node_db_id) REFERENCES nodes(id) ON DELETE CASCADE,
+            FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS node_tags (
+            node_db_id INTEGER NOT NULL,
+            tag_id INTEGER NOT NULL,
+            PRIMARY KEY (node_db_id, tag_id),
+            FOREIGN KEY (node_db_id) REFERENCES nodes(id) ON DELETE CASCADE,
+            FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_node_groups_group ON node_groups (group_id, node_db_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_node_tags_tag ON node_tags (tag_id, node_db_id)")
+
     conn.commit()
     conn.close()
 
@@ -341,6 +372,7 @@ def get_node_details(node_id):
         "rssi": get_latest_telemetry(node_id, "rssi"),
         "uptime_seconds": get_latest_telemetry(node_id, "uptime_seconds"),
         "capabilities": get_node_capabilities(node_id),
+        "organization": get_node_organization(node_id),
     })
     node["health"] = calculate_node_health(
         node["status"], node["capabilities"]["state"]
@@ -397,6 +429,33 @@ def get_nodes_overview(offline_threshold_seconds=60):
         FROM nodes AS n
         ORDER BY n.node_id ASC
     """).fetchall()
+    node_ids = [row["id"] for row in rows]
+    organization = {node_db_id: {"groups": [], "tags": [], "expected_capabilities": []}
+                    for node_db_id in node_ids}
+    # Three bounded, indexed relationship queries avoid an overview N+1 while
+    # keeping each reusable definition as structured JSON.
+    for relation, table, definition, key in (
+        ("groups", "node_groups", "groups", "group_id"),
+        ("tags", "node_tags", "tags", "tag_id"),
+    ):
+        for item in conn.execute(f"""
+            SELECT membership.node_db_id, definition.id, definition.name
+            FROM {table} AS membership
+            JOIN {definition} AS definition ON definition.id = membership.{key}
+            ORDER BY definition.name COLLATE NOCASE, definition.id
+        """):
+            organization[item["node_db_id"]][relation].append(
+                {"id": item["id"], "name": item["name"]}
+            )
+    for item in conn.execute("""
+        SELECT expected.node_db_id, capability.capability_key
+        FROM node_expected_capabilities AS expected
+        JOIN capabilities AS capability ON capability.id = expected.capability_id
+        ORDER BY capability.display_name
+    """):
+        organization[item["node_db_id"]]["expected_capabilities"].append(
+            item["capability_key"]
+        )
     conn.close()
 
     overview = []
@@ -413,8 +472,143 @@ def get_nodes_overview(offline_threshold_seconds=60):
             "name": row["name"],
             "status": status,
             "health": calculate_node_health(status, capability_state),
+            **organization[row["id"]],
         })
     return overview
+
+
+def _definition_table(kind):
+    if kind not in {"group", "tag"}:
+        raise ValueError("Unknown organization type")
+    return f"{kind}s"
+
+
+def list_definitions(kind):
+    table = _definition_table(kind)
+    membership = f"node_{table}"
+    foreign_key = f"{kind}_id"
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(f"""
+        SELECT definition.id, definition.name, COUNT(membership.node_db_id) AS node_count
+        FROM {table} AS definition
+        LEFT JOIN {membership} AS membership ON membership.{foreign_key} = definition.id
+        GROUP BY definition.id, definition.name
+        ORDER BY definition.name COLLATE NOCASE, definition.id
+    """).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def create_definition(kind, name):
+    table = _definition_table(kind)
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("name must be a non-empty string")
+    clean_name = name.strip()
+    conn = get_connection()
+    try:
+        cursor = conn.execute(f"INSERT INTO {table} (name) VALUES (?)", (clean_name,))
+        conn.commit()
+        return {"id": cursor.lastrowid, "name": clean_name, "node_count": 0}
+    except sqlite3.IntegrityError as error:
+        conn.rollback()
+        raise ValueError(f"A {kind} with that name already exists") from error
+    finally:
+        conn.close()
+
+
+def rename_definition(kind, definition_id, name):
+    table = _definition_table(kind)
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("name must be a non-empty string")
+    clean_name = name.strip()
+    conn = get_connection()
+    try:
+        cursor = conn.execute(f"UPDATE {table} SET name = ? WHERE id = ?", (clean_name, definition_id))
+        if cursor.rowcount == 0:
+            return False
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError as error:
+        conn.rollback()
+        raise ValueError(f"A {kind} with that name already exists") from error
+    finally:
+        conn.close()
+
+
+def delete_definition(kind, definition_id):
+    table = _definition_table(kind)
+    conn = get_connection()
+    cursor = conn.execute(f"DELETE FROM {table} WHERE id = ?", (definition_id,))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def get_node_organization(node_id):
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    node = conn.execute("SELECT id FROM nodes WHERE node_id = ?", (node_id,)).fetchone()
+    if node is None:
+        conn.close()
+        return None
+    result = {}
+    for kind in ("group", "tag"):
+        table = f"{kind}s"
+        rows = conn.execute(f"""
+            SELECT definition.id, definition.name FROM {table} AS definition
+            JOIN node_{table} AS membership ON membership.{kind}_id = definition.id
+            WHERE membership.node_db_id = ?
+            ORDER BY definition.name COLLATE NOCASE, definition.id
+        """, (node["id"],)).fetchall()
+        result[table] = [dict(row) for row in rows]
+    conn.close()
+    return result
+
+
+def mutate_organization(node_ids, kind, definition_ids, operation):
+    """Atomically mutate one or many node memberships after complete validation."""
+    table = _definition_table(kind)
+    if operation not in {"add", "remove"}:
+        raise ValueError("operation must be add or remove")
+    membership = f"node_{table}"
+    foreign_key = f"{kind}_id"
+    node_ids = list(dict.fromkeys(node_ids))
+    definition_ids = list(dict.fromkeys(definition_ids))
+    conn = get_connection()
+    try:
+        placeholders = ", ".join("?" for _ in node_ids)
+        nodes = conn.execute(
+            f"SELECT id, node_id FROM nodes WHERE node_id IN ({placeholders})", node_ids
+        ).fetchall()
+        found_nodes = {row[1]: row[0] for row in nodes}
+        missing_nodes = [node_id for node_id in node_ids if node_id not in found_nodes]
+        if missing_nodes:
+            raise LookupError(f"Unknown node_id(s): {', '.join(missing_nodes)}")
+        placeholders = ", ".join("?" for _ in definition_ids)
+        found_definitions = {row[0] for row in conn.execute(
+            f"SELECT id FROM {table} WHERE id IN ({placeholders})", definition_ids
+        )}
+        missing_definitions = [str(item) for item in definition_ids if item not in found_definitions]
+        if missing_definitions:
+            raise LookupError(f"Unknown {kind} ID(s): {', '.join(missing_definitions)}")
+        pairs = [(found_nodes[node_id], definition_id)
+                 for node_id in node_ids for definition_id in definition_ids]
+        if operation == "add":
+            conn.executemany(
+                f"INSERT OR IGNORE INTO {membership} (node_db_id, {foreign_key}) VALUES (?, ?)", pairs
+            )
+        else:
+            conn.executemany(
+                f"DELETE FROM {membership} WHERE node_db_id = ? AND {foreign_key} = ?", pairs
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def get_capabilities():
