@@ -4,9 +4,9 @@ A Raspberry Pi + ESP32 environmental monitoring dashboard and early-stage agricu
 
 ## Current Version
 
-**v1.14.0 — Groups, Tags & Fleet Organization**
+**v1.15.0 — Sensor & Actuator Component Model**
 
-This release adds normalized reusable groups and tags, Fleet Organization management, composable fleet filters, transactional bulk membership actions, and separate human-facing Details and Technical node views.
+This release adds a normalized reusable Component Library, node-specific connected components with lifecycle-safe removal, and stable child capability instances that derive Expected counts while keeping firmware-reported capabilities independent.
 
 ## Features
 
@@ -16,6 +16,9 @@ This release adds normalized reusable groups and tags, Fleet Organization manage
 - Dynamic node/sensor selectors, cards, historical charts, node status, RSSI, and uptime
 - Editable node names, locations, categories, GPS coordinates, and administrative enabled state
 - Generic sensor, actuator, and communication capabilities with expected/reported comparison
+- Reusable sensor/actuator definitions with normalized interface and non-communication capability mappings
+- Connected-component inventory with historical removal and stable child `ci_…` capability-instance identities
+- Count-aware Expected capabilities derived from active capability instances
 - Clickable dashboard status tile and `/nodes/<node_id>` node management details
 - Compact `/nodes` fleet registry with search, selection, and node navigation
 - Fleet Organization, group/tag membership management, multi-family filtering, and bulk organization actions
@@ -42,10 +45,10 @@ Firmware has independent semantic versions, unrelated to the platform release. F
 
 ## Data and MQTT
 
-Nodes publish flat JSON to `sensors/<device_id>/readings`. Existing payloads remain accepted. New firmware reports its complete capability set on MQTT connection/reconnection and also reports `firmware_name`, `firmware_version`, `hardware_model`, `hardware_revision`, and `ota_hostname`. These strings update the existing `nodes` row and are never measurements; numeric readings, RSSI, and uptime continue through the existing measurement model.
+Nodes publish flat JSON to `sensors/<device_id>/readings`. Existing payloads remain accepted. New firmware reports its complete capability set on MQTT connection/reconnection and also reports `firmware_name`, `firmware_version`, `hardware_model`, and `ota_hostname`. These strings update the existing `nodes` row and are never measurements; numeric readings, RSSI, and uptime continue through the existing measurement model. Legacy payloads containing `hardware_revision` remain accepted, but that obsolete value is ignored by current Node Management.
 
 ```json
-{"device_id":"irrigation_controller_001","firmware_name":"irrigation-controller","firmware_version":"1.0.0","hardware_model":"heltec-wifi-lora-32-v3","hardware_revision":"prototype-a","ota_hostname":"irrigation-controller-001","outside_temperature":24.8,"rssi":-61,"uptime_seconds":418}
+{"device_id":"irrigation_controller_001","firmware_name":"irrigation-controller","firmware_version":"1.0.0","hardware_model":"heltec-wifi-lora-32-v3","ota_hostname":"irrigation-controller-001","outside_temperature":24.8,"rssi":-61,"uptime_seconds":418}
 ```
 
 On startup, `init_db()` safely adds registry and device metadata columns to an older `sensor.db`; existing rows and measurements are retained. An idempotent `(node_id, timestamp DESC, id DESC)` measurements index bounds recent-cycle reads to one node's newest data and ensures every measurement in the latest 20 reporting timestamps is returned.
@@ -92,7 +95,11 @@ The OTA partition scheme is retained in every environment. Do not hardcode trans
 - `GET|POST /api/nodes/<node_id>/organization` — individual memberships
 - `POST /api/fleet/organization` — transactional bulk membership mutation
 - `GET /api/capabilities` — system capability registry
-- `PUT /api/nodes/<node_id>/capabilities` — replace expected capabilities
+- `GET|POST /api/components` — list/create reusable component definitions
+- `GET|PATCH|DELETE /api/components/<definition_key>` — inspect/update or lifecycle-remove an unassigned definition; the key is an internal routing identity and is not shown in the library UI
+- `GET|POST /api/nodes/<node_id>/components` — active inventory (add `?include_removed=true` for history) and connected-component creation
+- `GET|PATCH|DELETE /api/nodes/<node_id>/components/<connected_component_id>` — inspect/edit metadata or lifecycle-remove a connected component
+- `PUT /api/nodes/<node_id>/capabilities` — legacy expected-capability storage compatibility endpoint; it does not affect current component-derived Expected state
 - `GET /api/nodes/<node_id>` — metadata and calculated runtime state
 - `PATCH /api/nodes/<node_id>` — update name, location, category, GPS, or enabled state
 - `GET /api/readings?node_id=<node_id>` — readings
@@ -101,6 +108,8 @@ The OTA partition scheme is retained in every environment. Do not hardcode trans
 - `GET /nodes/<node_id>/technical` — technical/runtime/capability view
 - `GET /nodes` — fleet registry and node navigation
 - `GET /fleet/organization` — group/tag definition management
+- `GET /components` — reusable Component Library
+- `GET /nodes/<node_id>/components/<legacy_route_id>` — connected-component detail
 
 Status is disabled when administratively disabled; otherwise it is online when the latest measurement is at most 60 seconds old, offline when older, and unknown with no measurements. Missing metadata is returned as `null`.
 
@@ -141,5 +150,6 @@ The public repository is intended to begin with the mature v1.10.1 working tree 
 - **v1.12.0** — generic capability registry, expected/reported capability state, health, UI, and firmware reporting.
 - **v1.13.0** — fleet registry, search and selection foundation, and direct node navigation.
 - **v1.14.0** — groups, tags, fleet filters, bulk organization, and Details/Technical separation.
+- **v1.15.0** — reusable component definitions, node physical inventory, lifecycle removal, and component-derived Expected capabilities.
 
 Future work continues toward MQTT security, LoRaWAN, actuator and node management, and a dedicated Linux property server. See the architecture and operations documents for the current design and workflows.

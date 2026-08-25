@@ -144,7 +144,9 @@ def test_on_message_persists_metadata_and_measurements(isolated_database):
         "temperature": 22.5,
     }).encode()
     on_message(None, None, SimpleNamespace(payload=payload, topic="sensors/node_001/readings"))
-    assert get_node("node_001")["firmware_version"] == "1.0.0"
+    node = get_node("node_001")
+    assert node["firmware_version"] == "1.0.0"
+    assert "hardware_revision" not in node
     assert get_recent_measurements("node_001")[0]["temperature"] == 22.5
 
 
@@ -197,7 +199,8 @@ def test_malformed_capabilities_are_rejected(capabilities):
         parse({"device_id": "node", "capabilities": capabilities, "rssi": -60})
 
 
-def test_mqtt_reported_capabilities_replace_without_changing_expected(isolated_database):
+def test_mqtt_reported_capabilities_remain_independent_from_legacy_expected(isolated_database):
+    import sqlite3
     from types import SimpleNamespace
     from app.database import get_node_capabilities, replace_expected_capabilities, save_measurements
     from app.mqtt_subscriber import on_message
@@ -209,8 +212,12 @@ def test_mqtt_reported_capabilities_replace_without_changing_expected(isolated_d
         }).encode(), topic="sensors/node/readings")
         on_message(None, None, message)
     comparison = get_node_capabilities("node")
-    assert [item["capability_key"] for item in comparison["expected"]] == ["temperature_measurement"]
+    assert comparison["expected"] == []
     assert [item["capability_key"] for item in comparison["reported"]] == ["humidity_measurement"]
+    with sqlite3.connect(isolated_database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM node_expected_capabilities"
+        ).fetchone()[0] == 1
     assert comparison["reported_at"] is not None
 
 

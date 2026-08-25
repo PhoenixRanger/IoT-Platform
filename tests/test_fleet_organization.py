@@ -85,7 +85,7 @@ def test_definition_and_membership_apis(client):
 def test_overview_expected_capabilities_and_ui_filter_selection_contract(client):
     save_measurements("node", {"temperature": 20})
     client.put("/api/nodes/node/capabilities", json={"expected": ["wifi"]})
-    assert get_nodes_overview()[0]["expected_capabilities"] == ["wifi"]
+    assert get_nodes_overview()[0]["expected_capabilities"] == []
     page = client.get("/nodes").get_data(as_text=True)
     script = client.get("/static/nodes.js").get_data(as_text=True)
     for family in ("Group", "Tag", "Capability", "Runtime Status", "Overall Health"):

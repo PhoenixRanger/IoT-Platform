@@ -148,6 +148,7 @@ def test_metadata_is_persisted_and_updated(client):
     node = get_node("node_001")
     assert node["firmware_version"] == "1.0.1"
     assert node["hardware_model"] == "az-delivery-esp32-devkitc-v2"
+    assert "hardware_revision" not in node
 
 
 def test_node_details_api_includes_metadata_and_latest_runtime(client):
@@ -160,6 +161,7 @@ def test_node_details_api_includes_metadata_and_latest_runtime(client):
     details = response.get_json()
     assert details["firmware_name"] == "environment-node"
     assert details["firmware_version"] is None
+    assert "hardware_revision" not in details
     assert details["rssi"] == -55
     assert details["uptime_seconds"] == 321
     assert details["status"] == "online"
@@ -214,10 +216,43 @@ def test_init_db_migrates_original_nodes_schema(tmp_path, monkeypatch):
             "SELECT name, enabled FROM nodes WHERE node_id='legacy'"
         ).fetchone()
     assert {
-        "hardware_model", "hardware_revision", "firmware_name", "firmware_version",
+        "hardware_model", "firmware_name", "firmware_version",
         "ota_hostname", "category", "latitude", "longitude", "enabled",
     } <= columns
     assert migrated == ("Legacy", 1)
+
+
+def test_init_db_retains_but_does_not_expose_legacy_hardware_revision(tmp_path, monkeypatch):
+    from app import database
+
+    path = tmp_path / "legacy_revision.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute("""
+            CREATE TABLE nodes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_id TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                location TEXT,
+                node_type TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                hardware_revision TEXT
+            )
+        """)
+        connection.execute(
+            """INSERT INTO nodes
+               (node_id, name, node_type, created_at, hardware_revision)
+               VALUES ('legacy', 'Legacy', 'esp32_wifi', '2025-01-01 00:00:00', 'prototype-a')"""
+        )
+    monkeypatch.setattr(database, "DB_NAME", str(path))
+    database.init_db()
+    with sqlite3.connect(path) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(nodes)")}
+        stored = connection.execute(
+            "SELECT hardware_revision FROM nodes WHERE node_id = 'legacy'"
+        ).fetchone()[0]
+    assert "hardware_revision" in columns
+    assert stored == "prototype-a"
+    assert "hardware_revision" not in database.get_node("legacy")
 
 
 def test_registry_patch_updates_and_clears_user_fields(client):
@@ -378,6 +413,7 @@ CAPABILITY_KEYS = {
     "temperature_measurement", "humidity_measurement", "pressure_measurement",
     "soil_moisture_measurement", "soil_temperature_measurement", "relay_control",
     "pump_control", "valve_control", "wifi", "lorawan",
+    "switched_output",
 }
 
 
@@ -421,11 +457,11 @@ def test_expected_capabilities_replace_deduplicate_empty_and_validate(client):
     })
     assert response.status_code == 200
     comparison = response.get_json()
-    assert [item["capability_key"] for item in comparison["expected"]] == ["humidity_measurement", "temperature_measurement"]
+    assert comparison["expected"] == []
     assert [item["capability_key"] for item in comparison["reported"]] == ["temperature_measurement", "wifi"]
-    assert comparison["state"] == "capability_mismatch"
-    assert [item["capability_key"] for item in comparison["missing"]] == ["humidity_measurement"]
-    assert [item["capability_key"] for item in comparison["unexpected"]] == ["wifi"]
+    assert comparison["state"] == "healthy"
+    assert comparison["missing"] == []
+    assert [item["capability_key"] for item in comparison["unexpected"]] == ["temperature_measurement", "wifi"]
     assert client.put("/api/nodes/node/capabilities", json={"expected": []}).get_json()["state"] == "healthy"
     assert client.put("/api/nodes/node/capabilities", json={"expected": ["unknown"]}).status_code == 400
     assert client.put("/api/nodes/missing/capabilities", json={"expected": []}).status_code == 404
@@ -443,11 +479,15 @@ def test_capability_comparison_and_health_precedence(client, isolated_database):
     unknown = client.get("/api/nodes/node").get_json()
     assert unknown["capabilities"]["state"] == "unknown"
     assert unknown["health"] == "unknown"
-    client.put("/api/nodes/node/capabilities", json={"expected": ["temperature_measurement", "humidity_measurement"]})
+    client.post("/api/nodes/node/components", json={
+        "definition_key": "aosong-dht22", "label": "Environment Sensor"
+    })
     replace_reported_capabilities("node", ["temperature_measurement", "wifi"])
     mismatch = client.get("/api/nodes/node").get_json()
     assert mismatch["health"] == "capability_mismatch"
-    client.put("/api/nodes/node/capabilities", json={"expected": ["temperature_measurement"]})
+    replace_reported_capabilities(
+        "node", ["temperature_measurement", "humidity_measurement", "wifi"]
+    )
     healthy = client.get("/api/nodes/node").get_json()
     assert healthy["health"] == "healthy"
     assert [item["capability_key"] for item in healthy["capabilities"]["unexpected"]] == ["wifi"]
@@ -458,7 +498,9 @@ def test_capability_comparison_and_health_precedence(client, isolated_database):
 def test_empty_reported_set_is_known_and_can_mismatch(client):
     from app.database import replace_reported_capabilities
     save_measurements("node", {"temperature": 20})
-    client.put("/api/nodes/node/capabilities", json={"expected": ["wifi"]})
+    client.post("/api/nodes/node/components", json={
+        "definition_key": "te-ms8607", "label": "Outside Sensor"
+    })
     replace_reported_capabilities("node", [])
     details = client.get("/api/nodes/node").get_json()
     assert details["capabilities"]["reported_at"] is not None
@@ -468,12 +510,14 @@ def test_empty_reported_set_is_known_and_can_mismatch(client):
 def test_capability_ui_contract(client):
     page = client.get("/nodes/missing/technical").get_data(as_text=True)
     script = client.get("/static/node_technical.js").get_data(as_text=True)
-    for target in ["capabilityDetails", "capabilityEditor", "editCapabilities", "saveCapabilities", "cancelCapabilities"]:
-        assert f'id="{target}"' in page
-    assert "Sensors" in script and "Actuators" in script and "Communication" in script
-    assert 'checkbox.name = "expectedCapability"' in script
-    assert "/capabilities`" in script
+    assert 'id="capabilityDetails"' in page
+    for removed in ["capabilityEditor", "editCapabilities", "saveCapabilities", "cancelCapabilities"]:
+        assert f'id="{removed}"' not in page
+    assert "counts:true" in script
+    assert 'id="nodeComponentRows"' in page
     assert 'id="capabilitiesPanel"' in page
+    assert "Hardware revision" not in script
+    assert "hardware_revision" not in script
 
 
 def test_fleet_page_and_dashboard_navigation(client):
@@ -501,7 +545,9 @@ def test_fleet_overview_runtime_and_health_semantics(client, isolated_database):
     client.patch("/api/nodes/disabled", json={"enabled": False})
     client.put("/api/nodes/online/capabilities", json={"expected": []})
     replace_reported_capabilities("online", [])
-    client.put("/api/nodes/mismatch/capabilities", json={"expected": ["wifi"]})
+    client.post("/api/nodes/mismatch/components", json={
+        "definition_key": "te-ms8607", "label": "Outside Sensor"
+    })
     replace_reported_capabilities("mismatch", [])
     stale = (datetime.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
     with sqlite3.connect(isolated_database) as connection:

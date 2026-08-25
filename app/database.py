@@ -1,4 +1,6 @@
 import sqlite3
+import re
+import secrets
 from datetime import datetime
 
 from app.config import DB_NAME, DEFAULT_NODE_ID, READING_LIMIT
@@ -40,8 +42,39 @@ CAPABILITY_DEFINITIONS = (
     ("relay_control", "Relay Control", "actuator", "Controls a relay output."),
     ("pump_control", "Pump Control", "actuator", "Controls a pump."),
     ("valve_control", "Valve Control", "actuator", "Controls a valve."),
+    ("switched_output", "Switched Output", "actuator", "Provides a generic switched output."),
     ("wifi", "Wi-Fi", "communication", "Communicates over Wi-Fi."),
     ("lorawan", "LoRaWAN", "communication", "Communicates over LoRaWAN."),
+)
+
+COMPONENT_CLASSES = {"sensor", "actuator"}
+COMPONENT_INTERFACE_TYPES = {"i2c", "spi", "uart", "analog_signal", "digital_signal"}
+DEFINITION_KEY_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+COMPONENT_SEEDS = (
+    {
+        "definition_key": "te-ms8607", "display_name": "TE Connectivity MS8607",
+        "manufacturer": "TE Connectivity", "model": "MS8607", "component_class": "sensor",
+        "interfaces": ["i2c"],
+        "capabilities": ["temperature_measurement", "humidity_measurement", "pressure_measurement"],
+    },
+    {
+        "definition_key": "aosong-dht22", "display_name": "Aosong DHT22 / AM2302",
+        "manufacturer": "Aosong", "model": "DHT22 / AM2302", "component_class": "sensor",
+        "interfaces": ["digital_signal"],
+        "capabilities": ["temperature_measurement", "humidity_measurement"],
+    },
+    {
+        "definition_key": "generic-analog-soil-moisture-sensor",
+        "display_name": "Generic Analog Soil-Moisture Sensor", "manufacturer": None,
+        "model": None, "component_class": "sensor", "interfaces": ["analog_signal"],
+        "capabilities": ["soil_moisture_measurement"],
+    },
+    {
+        "definition_key": "generic-mosfet-switch-module",
+        "display_name": "Generic MOSFET Switch Module", "manufacturer": None,
+        "model": None, "component_class": "actuator", "interfaces": ["digital_signal"],
+        "capabilities": ["switched_output"],
+    },
 )
 
 
@@ -77,7 +110,6 @@ def init_db():
     }
     additive_columns = {
         "hardware_model": "TEXT",
-        "hardware_revision": "TEXT",
         "firmware_name": "TEXT",
         "firmware_version": "TEXT",
         "ota_hostname": "TEXT",
@@ -228,8 +260,171 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_node_groups_group ON node_groups (group_id, node_db_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_node_tags_tag ON node_tags (tag_id, node_db_id)")
 
+    # Reusable physical sensing/control hardware is normalized independently
+    # from generic capabilities and from node-specific physical inventory.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS component_definitions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            definition_key TEXT NOT NULL UNIQUE,
+            display_name TEXT NOT NULL,
+            manufacturer TEXT,
+            model TEXT,
+            component_class TEXT NOT NULL CHECK (component_class IN ('sensor', 'actuator')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            lifecycle_status TEXT NOT NULL DEFAULT 'active'
+                CHECK (lifecycle_status IN ('active', 'removed')),
+            removed_at TEXT
+        )
+    """)
+    definition_columns = {
+        row[1] for row in cur.execute("PRAGMA table_info(component_definitions)").fetchall()
+    }
+    # v1.15 definition slugs are retained only as internal routing/seed keys.
+    if "component_id" in definition_columns and "definition_key" not in definition_columns:
+        cur.execute("ALTER TABLE component_definitions RENAME COLUMN component_id TO definition_key")
+        definition_columns.remove("component_id")
+        definition_columns.add("definition_key")
+    if "lifecycle_status" not in definition_columns:
+        cur.execute("""ALTER TABLE component_definitions
+                       ADD COLUMN lifecycle_status TEXT NOT NULL DEFAULT 'active'""")
+    if "removed_at" not in definition_columns:
+        cur.execute("ALTER TABLE component_definitions ADD COLUMN removed_at TEXT")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS component_interface_requirements (
+            component_definition_id INTEGER NOT NULL,
+            interface_type TEXT NOT NULL CHECK (interface_type IN
+                ('i2c', 'spi', 'uart', 'analog_signal', 'digital_signal')),
+            PRIMARY KEY (component_definition_id, interface_type),
+            FOREIGN KEY (component_definition_id) REFERENCES component_definitions(id) ON DELETE CASCADE
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS component_capabilities (
+            component_definition_id INTEGER NOT NULL,
+            capability_id INTEGER NOT NULL,
+            PRIMARY KEY (component_definition_id, capability_id),
+            FOREIGN KEY (component_definition_id) REFERENCES component_definitions(id) ON DELETE CASCADE,
+            FOREIGN KEY (capability_id) REFERENCES capabilities(id)
+        )
+    """)
+    # PR #33 called connected physical modules "instances". Rename that small
+    # management table and preserve old URL keys only as aliases.
+    tables = {row[0] for row in cur.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'"
+    ).fetchall()}
+    if "node_component_instances" in tables and "connected_components" not in tables:
+        cur.execute("ALTER TABLE node_component_instances RENAME TO connected_components")
+    connected_columns = {
+        row[1] for row in cur.execute("PRAGMA table_info(connected_components)").fetchall()
+    } if "connected_components" in {row[0] for row in cur.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'"
+    ).fetchall()} else set()
+    if "instance_id" in connected_columns and "connected_component_id" not in connected_columns:
+        cur.execute("ALTER TABLE connected_components RENAME COLUMN instance_id TO connected_component_id")
+        connected_columns.remove("instance_id")
+        connected_columns.add("connected_component_id")
+    if connected_columns and "legacy_route_id" not in connected_columns:
+        cur.execute("ALTER TABLE connected_components ADD COLUMN legacy_route_id TEXT")
+    if connected_columns:
+        legacy_rows = cur.execute("""SELECT id, connected_component_id
+            FROM connected_components WHERE substr(connected_component_id, 1, 3) = 'ci_'""").fetchall()
+        for connected_db_id, legacy_route_id in legacy_rows:
+            for _ in range(12):
+                replacement = f"nc_{secrets.token_hex(5)}"
+                if cur.execute("""SELECT 1 FROM connected_components
+                    WHERE connected_component_id = ?""", (replacement,)).fetchone() is None:
+                    break
+            else:
+                raise RuntimeError("Unable to migrate a unique Connected Component ID")
+            cur.execute("""UPDATE connected_components
+                SET connected_component_id = ?, legacy_route_id = ? WHERE id = ?""",
+                (replacement, legacy_route_id, connected_db_id))
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS connected_components (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            connected_component_id TEXT NOT NULL UNIQUE,
+            legacy_route_id TEXT UNIQUE,
+            node_db_id INTEGER NOT NULL,
+            component_definition_id INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            location TEXT,
+            zone TEXT,
+            lifecycle_status TEXT NOT NULL DEFAULT 'active'
+                CHECK (lifecycle_status IN ('active', 'removed')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            removed_at TEXT,
+            FOREIGN KEY (node_db_id) REFERENCES nodes(id) ON DELETE RESTRICT,
+            FOREIGN KEY (component_definition_id) REFERENCES component_definitions(id) ON DELETE RESTRICT
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS component_capability_instances (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            capability_instance_id TEXT NOT NULL UNIQUE,
+            connected_component_id INTEGER NOT NULL,
+            capability_id INTEGER NOT NULL,
+            lifecycle_status TEXT NOT NULL DEFAULT 'active'
+                CHECK (lifecycle_status IN ('active', 'removed')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            removed_at TEXT,
+            FOREIGN KEY (connected_component_id)
+                REFERENCES connected_components(id) ON DELETE RESTRICT,
+            FOREIGN KEY (capability_id) REFERENCES capabilities(id) ON DELETE RESTRICT
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_component_interfaces_definition ON component_interface_requirements (component_definition_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_component_capabilities_definition ON component_capabilities (component_definition_id, capability_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_connected_components_node_active ON connected_components (node_db_id, lifecycle_status)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_connected_components_definition ON connected_components (component_definition_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_component_definitions_lifecycle ON component_definitions (lifecycle_status, display_name)")
+    cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_active_capability_instance
+                   ON component_capability_instances
+                       (connected_component_id, capability_id)
+                   WHERE lifecycle_status = 'active'""")
+    cur.execute("""CREATE INDEX IF NOT EXISTS idx_capability_instances_component
+                   ON component_capability_instances
+                       (connected_component_id, lifecycle_status)""")
+    cur.execute("""CREATE INDEX IF NOT EXISTS idx_capability_instances_capability
+                   ON component_capability_instances
+                       (capability_id, lifecycle_status)""")
+    _seed_component_definitions(cur)
+    _reconcile_capability_instances(cur, include_removed_missing=True)
+
     conn.commit()
     conn.close()
+
+
+def _seed_component_definitions(cur):
+    """Idempotently add verified/truthfully generic project hardware definitions."""
+    timestamp = now_string()
+    capability_ids = dict(cur.execute(
+        "SELECT capability_key, id FROM capabilities"
+    ).fetchall())
+    for seed in COMPONENT_SEEDS:
+        inserted = cur.execute("""
+            INSERT INTO component_definitions
+                (definition_key, display_name, manufacturer, model, component_class, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(definition_key) DO NOTHING
+        """, (seed["definition_key"], seed["display_name"], seed["manufacturer"], seed["model"],
+              seed["component_class"], timestamp, timestamp)).rowcount
+        definition_id = cur.execute(
+            "SELECT id FROM component_definitions WHERE definition_key = ?", (seed["definition_key"],)
+        ).fetchone()[0]
+        if not inserted:
+            continue
+        cur.executemany("""
+            INSERT OR IGNORE INTO component_interface_requirements
+                (component_definition_id, interface_type) VALUES (?, ?)
+        """, [(definition_id, item) for item in seed["interfaces"]])
+        cur.executemany("""
+            INSERT OR IGNORE INTO component_capabilities
+                (component_definition_id, capability_id) VALUES (?, ?)
+        """, [(definition_id, capability_ids[item]) for item in seed["capabilities"]])
 
 
 def get_or_create_node(cur, node_id, name=None, location=None, node_type="esp32_wifi"):
@@ -283,7 +478,6 @@ def get_nodes():
 DEVICE_METADATA_FIELDS = (
     "node_type",
     "hardware_model",
-    "hardware_revision",
     "firmware_name",
     "firmware_version",
     "ota_hostname",
@@ -333,8 +527,7 @@ def get_node(node_id):
         """
         SELECT node_id, name, location, category, latitude, longitude,
                enabled, node_type, hardware_model,
-               hardware_revision, firmware_name, firmware_version,
-               ota_hostname, created_at
+               firmware_name, firmware_version, ota_hostname, created_at
         FROM nodes WHERE node_id = ?
         """,
         (node_id,),
@@ -345,6 +538,554 @@ def get_node(node_id):
     node = dict(row)
     node["enabled"] = bool(node["enabled"])
     return node
+
+
+def _clean_optional_text(value, field):
+    if value is not None and not isinstance(value, str):
+        raise ValueError(f"{field} must be a string or null")
+    return value.strip() or None if isinstance(value, str) else None
+
+
+def _validate_component_definition(values, creating=False):
+    required = {"display_name", "component_class",
+                "interfaces", "capabilities"} if creating else set()
+    allowed = {"display_name", "manufacturer", "model", "component_class", "interfaces", "capabilities"}
+    # Accept an explicitly named legacy/API definition key for compatibility;
+    # the normal UI never asks users to create or edit one.
+    if creating:
+        allowed.add("definition_key")
+    if not isinstance(values, dict) or required - set(values) or set(values) - allowed:
+        if creating:
+            raise ValueError("A complete component definition is required")
+        raise ValueError("Request contains unsupported or missing fields")
+    result = {}
+    if creating:
+        result.update({"manufacturer": None, "model": None})
+    if "definition_key" in values:
+        definition_key = values["definition_key"]
+        if not isinstance(definition_key, str) or not DEFINITION_KEY_PATTERN.fullmatch(definition_key):
+            raise ValueError(
+                "definition_key must contain lowercase letters, numbers, and single hyphens"
+            )
+        result["definition_key"] = definition_key
+    if "display_name" in values:
+        if not isinstance(values["display_name"], str) or not values["display_name"].strip():
+            raise ValueError("display_name must be a non-empty string")
+        result["display_name"] = values["display_name"].strip()
+    for field in ("manufacturer", "model"):
+        if field in values:
+            result[field] = _clean_optional_text(values[field], field)
+    if "component_class" in values:
+        if values["component_class"] not in COMPONENT_CLASSES:
+            raise ValueError("component_class must be sensor or actuator")
+        result["component_class"] = values["component_class"]
+    for field, allowed_values in (("interfaces", COMPONENT_INTERFACE_TYPES),):
+        if field in values:
+            items = values[field]
+            if not isinstance(items, list) or any(not isinstance(item, str) for item in items):
+                raise ValueError(f"{field} must be a list of strings")
+            if not items:
+                raise ValueError("A component definition must have at least one interface requirement")
+            if len(items) != len(set(items)):
+                raise ValueError(f"Duplicate {field} are not allowed")
+            unknown = sorted(set(items) - allowed_values)
+            if unknown:
+                raise ValueError(f"Unknown interface type(s): {', '.join(unknown)}")
+            result[field] = items
+    if "capabilities" in values:
+        items = values["capabilities"]
+        if not isinstance(items, list) or any(not isinstance(item, str) for item in items):
+            raise ValueError("capabilities must be a list of capability keys")
+        if not items:
+            raise ValueError("A component definition must provide at least one capability")
+        if len(items) != len(set(items)):
+            raise ValueError("Duplicate capabilities are not allowed")
+        result["capabilities"] = items
+    return result
+
+
+def _component_rows(conn, definition_key=None, include_removed=False):
+    """Load the small component library and both relationships without N+1 queries."""
+    conn.row_factory = sqlite3.Row
+    clauses, params = [], []
+    if definition_key is not None:
+        clauses.append("definition.definition_key = ?")
+        params.append(definition_key)
+    if not include_removed:
+        clauses.append("definition.lifecycle_status = 'active'")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = conn.execute(f"""
+        SELECT definition.*,
+               SUM(CASE WHEN connected.lifecycle_status = 'active' THEN 1 ELSE 0 END)
+                   AS active_connected_component_count,
+               COUNT(connected.id) AS historical_connected_component_count
+        FROM component_definitions AS definition
+        LEFT JOIN connected_components AS connected
+          ON connected.component_definition_id = definition.id
+        {where}
+        GROUP BY definition.id
+        ORDER BY definition.display_name COLLATE NOCASE, definition.definition_key
+    """, params).fetchall()
+    definitions = {row["id"]: {key: row[key] for key in (
+        "definition_key", "display_name", "manufacturer", "model", "component_class",
+        "created_at", "updated_at", "lifecycle_status", "removed_at",
+        "active_connected_component_count", "historical_connected_component_count")}
+        | {"interfaces": [], "capabilities": []} for row in rows}
+    if not definitions:
+        return []
+    ids = list(definitions)
+    placeholders = ", ".join("?" for _ in ids)
+    for row in conn.execute(f"""
+        SELECT component_definition_id, interface_type
+        FROM component_interface_requirements
+        WHERE component_definition_id IN ({placeholders})
+        ORDER BY interface_type
+    """, ids):
+        definitions[row["component_definition_id"]]["interfaces"].append(row["interface_type"])
+    for row in conn.execute(f"""
+        SELECT mapping.component_definition_id, capability.capability_key,
+               capability.display_name, capability.capability_class, capability.description
+        FROM component_capabilities AS mapping
+        JOIN capabilities AS capability ON capability.id = mapping.capability_id
+        WHERE mapping.component_definition_id IN ({placeholders})
+        ORDER BY capability.display_name
+    """, ids):
+        definitions[row["component_definition_id"]]["capabilities"].append({
+            key: row[key] for key in ("capability_key", "display_name", "capability_class", "description")
+        })
+    return list(definitions.values())
+
+
+def list_component_definitions(include_removed=False):
+    conn = get_connection()
+    rows = _component_rows(conn, include_removed=include_removed)
+    conn.close()
+    return rows
+
+
+def get_component_definition(definition_key, include_removed=False):
+    conn = get_connection()
+    rows = _component_rows(conn, definition_key, include_removed)
+    conn.close()
+    return rows[0] if rows else None
+
+
+def _replace_component_relationships(cur, definition_id, values):
+    if "capabilities" in values:
+        keys, capability_ids = _validated_component_capability_ids(cur, values["capabilities"])
+        cur.execute("DELETE FROM component_capabilities WHERE component_definition_id = ?", (definition_id,))
+        cur.executemany("INSERT INTO component_capabilities (component_definition_id, capability_id) VALUES (?, ?)",
+                        [(definition_id, capability_ids[key]) for key in keys])
+    if "interfaces" in values:
+        cur.execute("DELETE FROM component_interface_requirements WHERE component_definition_id = ?", (definition_id,))
+        cur.executemany("INSERT INTO component_interface_requirements (component_definition_id, interface_type) VALUES (?, ?)",
+                        [(definition_id, item) for item in values["interfaces"]])
+
+
+def create_component_definition(values):
+    values = _validate_component_definition(values, creating=True)
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        # Validate relationships before creating anything; capabilities are never implicit.
+        _validated_component_capability_ids(cur, values["capabilities"])
+        definition_key = values.get("definition_key")
+        if definition_key is None:
+            for _ in range(12):
+                definition_key = f"def_{secrets.token_hex(5)}"
+                if cur.execute("SELECT 1 FROM component_definitions WHERE definition_key = ?",
+                               (definition_key,)).fetchone() is None:
+                    break
+            else:
+                raise RuntimeError("Unable to generate a unique definition key")
+        elif cur.execute("SELECT 1 FROM component_definitions WHERE definition_key = ?",
+                         (definition_key,)).fetchone() is not None:
+            raise ValueError("A component definition with that definition_key already exists")
+        timestamp = now_string()
+        cur.execute("""INSERT INTO component_definitions
+            (definition_key, display_name, manufacturer, model, component_class, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""", (definition_key,) + tuple(values[key] for key in (
+                "display_name", "manufacturer", "model", "component_class")) + (timestamp, timestamp))
+        _replace_component_relationships(cur, cur.lastrowid, values)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return get_component_definition(definition_key)
+
+
+def update_component_definition(definition_key, values):
+    if isinstance(values, dict) and "definition_key" in values:
+        raise ValueError("definition_key is immutable")
+    values = _validate_component_definition(values)
+    if not values:
+        raise ValueError("Request body must not be empty")
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        row = cur.execute("""SELECT id FROM component_definitions
+                             WHERE definition_key = ? AND lifecycle_status = 'active'""",
+                          (definition_key,)).fetchone()
+        if row is None:
+            return None
+        if "capabilities" in values:
+            _validated_component_capability_ids(cur, values["capabilities"])
+        metadata = {key: value for key, value in values.items() if key not in {"interfaces", "capabilities"}}
+        if metadata:
+            metadata["updated_at"] = now_string()
+            assignments = ", ".join(f"{key} = ?" for key in metadata)
+            cur.execute(f"UPDATE component_definitions SET {assignments} WHERE id = ?", (*metadata.values(), row[0]))
+        _replace_component_relationships(cur, row[0], values)
+        if "capabilities" in values:
+            _reconcile_capability_instances(
+                cur, component_definition_id=row[0], include_removed_missing=False
+            )
+        if set(values) <= {"interfaces", "capabilities"}:
+            cur.execute("UPDATE component_definitions SET updated_at = ? WHERE id = ?", (now_string(), row[0]))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return get_component_definition(definition_key)
+
+
+def delete_component_definition(definition_key):
+    conn = get_connection()
+    try:
+        row = conn.execute("""SELECT id FROM component_definitions
+                              WHERE definition_key = ? AND lifecycle_status = 'active'""",
+                           (definition_key,)).fetchone()
+        if row is None:
+            return "missing"
+        if conn.execute("""SELECT 1 FROM connected_components
+                            WHERE component_definition_id = ?
+                              AND lifecycle_status = 'active' LIMIT 1""", row).fetchone():
+            return "active_reference"
+        timestamp = now_string()
+        conn.execute("""UPDATE component_definitions
+                        SET lifecycle_status = 'removed', removed_at = ?, updated_at = ?
+                        WHERE id = ?""", (timestamp, timestamp, row[0]))
+        conn.commit()
+        return "removed"
+    finally:
+        conn.close()
+
+
+def _new_connected_component_id(cur):
+    """Generate the immutable public identity for one connected physical module."""
+    for _ in range(12):
+        connected_component_id = f"nc_{secrets.token_hex(5)}"
+        if cur.execute("SELECT 1 FROM connected_components WHERE connected_component_id = ?",
+                       (connected_component_id,)).fetchone() is None:
+            return connected_component_id
+    raise RuntimeError("Unable to generate a unique Connected Component ID")
+
+
+def _new_capability_instance_id(cur):
+    for _ in range(12):
+        capability_instance_id = f"ci_{secrets.token_hex(5)}"
+        if cur.execute(
+            """SELECT 1 FROM component_capability_instances
+               WHERE capability_instance_id = ?""", (capability_instance_id,)
+        ).fetchone() is None:
+            return capability_instance_id
+    raise RuntimeError("Unable to generate a unique capability-instance ID")
+
+
+def _reconcile_capability_instances(
+        cur, connected_component_ids=None, component_definition_id=None,
+        include_removed_missing=False):
+    """Reconcile normalized capability children without reusing removed identities."""
+    clauses, parameters = [], []
+    if connected_component_ids is not None:
+        ids = list(dict.fromkeys(connected_component_ids))
+        if not ids:
+            return
+        placeholders = ", ".join("?" for _ in ids)
+        clauses.append(f"connected.id IN ({placeholders})")
+        parameters.extend(ids)
+    if component_definition_id is not None:
+        clauses.append("connected.component_definition_id = ?")
+        parameters.append(component_definition_id)
+    if not include_removed_missing:
+        clauses.append("connected.lifecycle_status = 'active'")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    connected = cur.execute(f"""
+        SELECT connected.id, connected.component_definition_id,
+               connected.lifecycle_status, connected.removed_at
+        FROM connected_components AS connected
+        {where}
+        ORDER BY connected.id
+    """, parameters).fetchall()
+    if not connected:
+        return
+
+    definition_ids = sorted({row[1] for row in connected})
+    placeholders = ", ".join("?" for _ in definition_ids)
+    desired_by_definition = {definition_id: set() for definition_id in definition_ids}
+    for definition_id, capability_id in cur.execute(f"""
+        SELECT component_definition_id, capability_id
+        FROM component_capabilities
+        WHERE component_definition_id IN ({placeholders})
+    """, definition_ids):
+        desired_by_definition[definition_id].add(capability_id)
+
+    connected_ids = [row[0] for row in connected]
+    placeholders = ", ".join("?" for _ in connected_ids)
+    existing_by_component = {connected_id: [] for connected_id in connected_ids}
+    for row in cur.execute(f"""
+        SELECT id, connected_component_id, capability_id, lifecycle_status
+        FROM component_capability_instances
+        WHERE connected_component_id IN ({placeholders})
+    """, connected_ids):
+        existing_by_component[row[1]].append(row)
+
+    timestamp = now_string()
+    for connected_id, definition_id, lifecycle_status, parent_removed_at in connected:
+        desired = desired_by_definition[definition_id]
+        existing = existing_by_component[connected_id]
+        active_by_capability = {row[2]: row[0] for row in existing if row[3] == "active"}
+        historical_capabilities = {row[2] for row in existing}
+
+        if lifecycle_status == "removed":
+            cur.execute("""UPDATE component_capability_instances
+                SET lifecycle_status = 'removed', removed_at = ?, updated_at = ?
+                WHERE connected_component_id = ? AND lifecycle_status = 'active'""",
+                (parent_removed_at or timestamp, timestamp, connected_id))
+            if include_removed_missing:
+                for capability_id in sorted(desired - historical_capabilities):
+                    removed_at = parent_removed_at or timestamp
+                    cur.execute("""INSERT INTO component_capability_instances
+                        (capability_instance_id, connected_component_id, capability_id,
+                         lifecycle_status, created_at, updated_at, removed_at)
+                        VALUES (?, ?, ?, 'removed', ?, ?, ?)""",
+                        (_new_capability_instance_id(cur), connected_id, capability_id,
+                         removed_at, removed_at, removed_at))
+            continue
+
+        for capability_id in sorted(set(active_by_capability) - desired):
+            cur.execute("""UPDATE component_capability_instances
+                SET lifecycle_status = 'removed', removed_at = ?, updated_at = ?
+                WHERE id = ?""", (timestamp, timestamp, active_by_capability[capability_id]))
+        for capability_id in sorted(desired - set(active_by_capability)):
+            cur.execute("""INSERT INTO component_capability_instances
+                (capability_instance_id, connected_component_id, capability_id,
+                 lifecycle_status, created_at, updated_at)
+                VALUES (?, ?, ?, 'active', ?, ?)""",
+                (_new_capability_instance_id(cur), connected_id, capability_id,
+                 timestamp, timestamp))
+
+
+def _connected_component_rows(conn, node_id, connected_component_id=None, include_removed=False):
+    conn.row_factory = sqlite3.Row
+    clauses, params = ["node.node_id = ?"], [node_id]
+    if connected_component_id is not None:
+        clauses.append("(connected.connected_component_id = ? OR connected.legacy_route_id = ?)")
+        params.extend((connected_component_id, connected_component_id))
+    if not include_removed:
+        clauses.append("connected.lifecycle_status = 'active'")
+    rows = conn.execute(f"""
+        SELECT connected.id AS connected_db_id, connected.connected_component_id,
+               connected.label, connected.location, connected.zone,
+               connected.lifecycle_status, connected.created_at, connected.updated_at, connected.removed_at,
+               node.node_id, node.name AS node_name, definition.id AS definition_db_id,
+               definition.definition_key, definition.display_name, definition.manufacturer,
+               definition.model, definition.component_class
+        FROM connected_components AS connected
+        JOIN nodes AS node ON node.id = connected.node_db_id
+        JOIN component_definitions AS definition ON definition.id = connected.component_definition_id
+        WHERE {' AND '.join(clauses)}
+        ORDER BY connected.created_at, connected.id
+    """, params).fetchall()
+    results = [dict(row) | {
+        "interfaces": [], "capabilities": [], "capability_instances": []
+    } for row in rows]
+    if not results:
+        return results
+    by_definition = {}
+    by_connected = {}
+    for item in results:
+        by_connected[item["connected_db_id"]] = item
+        by_definition.setdefault(item.pop("definition_db_id"), []).append(item)
+    ids = list(by_definition)
+    placeholders = ", ".join("?" for _ in ids)
+    for definition_id, interface in conn.execute(f"""
+        SELECT component_definition_id, interface_type FROM component_interface_requirements
+        WHERE component_definition_id IN ({placeholders}) ORDER BY interface_type
+    """, ids):
+        for item in by_definition[definition_id]:
+            item["interfaces"].append(interface)
+    for row in conn.execute(f"""
+        SELECT mapping.component_definition_id, capability.capability_key,
+               capability.display_name, capability.capability_class, capability.description
+        FROM component_capabilities AS mapping
+        JOIN capabilities AS capability ON capability.id = mapping.capability_id
+        WHERE mapping.component_definition_id IN ({placeholders}) ORDER BY capability.display_name
+    """, ids):
+        capability = {key: row[key] for key in ("capability_key", "display_name", "capability_class", "description")}
+        for item in by_definition[row["component_definition_id"]]:
+            item["capabilities"].append(capability.copy())
+    connected_ids = list(by_connected)
+    placeholders = ", ".join("?" for _ in connected_ids)
+    for row in conn.execute(f"""
+        SELECT capability_instance.connected_component_id,
+               capability_instance.capability_instance_id,
+               capability_instance.lifecycle_status,
+               capability_instance.created_at,
+               capability_instance.updated_at,
+               capability_instance.removed_at,
+               capability.capability_key, capability.display_name,
+               capability.capability_class, capability.description
+        FROM component_capability_instances AS capability_instance
+        JOIN capabilities AS capability
+          ON capability.id = capability_instance.capability_id
+        WHERE capability_instance.connected_component_id IN ({placeholders})
+        ORDER BY capability.display_name, capability_instance.id
+    """, connected_ids):
+        item = by_connected[row["connected_component_id"]]
+        if item["lifecycle_status"] == "active" and row["lifecycle_status"] != "active":
+            continue
+        item["capability_instances"].append({key: row[key] for key in (
+            "capability_instance_id", "capability_key", "display_name",
+            "capability_class", "description", "lifecycle_status",
+            "created_at", "updated_at", "removed_at",
+        )})
+    for item in results:
+        item.pop("connected_db_id", None)
+        item["definition"] = {
+            "definition_key": item["definition_key"],
+            "name": item["display_name"],
+            "manufacturer": item["manufacturer"],
+            "model": item["model"],
+            "component_class": item["component_class"],
+        }
+    return results
+
+
+def list_connected_components(node_id, include_removed=False):
+    conn = get_connection()
+    exists = conn.execute("SELECT 1 FROM nodes WHERE node_id = ?", (node_id,)).fetchone()
+    rows = _connected_component_rows(conn, node_id, include_removed=include_removed) if exists else None
+    conn.close()
+    return rows
+
+
+def get_connected_component(node_id, connected_component_id):
+    conn = get_connection()
+    rows = _connected_component_rows(
+        conn, node_id, connected_component_id, include_removed=True
+    )
+    conn.close()
+    return rows[0] if rows else None
+
+
+def _validate_connected_component_metadata(values, creating=False):
+    required = {"definition_key", "label"} if creating else set()
+    allowed = {"definition_key", "label", "location", "zone"} if creating else {"label", "location", "zone"}
+    if not isinstance(values, dict) or required - set(values) or set(values) - allowed:
+        raise ValueError("Request contains unsupported or missing connected-component fields")
+    result = {"location": None, "zone": None} if creating else {}
+    if "definition_key" in values:
+        if not isinstance(values["definition_key"], str) or not values["definition_key"]:
+            raise ValueError("definition_key must be a non-empty string")
+        result["definition_key"] = values["definition_key"]
+    if "label" in values:
+        if not isinstance(values["label"], str) or not values["label"].strip():
+            raise ValueError("label must be a non-empty string")
+        result["label"] = values["label"].strip()
+    for field in ("location", "zone"):
+        if field in values:
+            result[field] = _clean_optional_text(values[field], field)
+    return result
+
+
+def create_connected_component(node_id, values):
+    values = _validate_connected_component_metadata(values, creating=True)
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        node = cur.execute("SELECT id FROM nodes WHERE node_id = ?", (node_id,)).fetchone()
+        if node is None:
+            raise LookupError("Node not found")
+        definition = cur.execute("""SELECT id FROM component_definitions
+            WHERE definition_key = ? AND lifecycle_status = 'active'""",
+            (values["definition_key"],)).fetchone()
+        if definition is None:
+            raise LookupError("Component definition not found")
+        public_id, timestamp = _new_connected_component_id(cur), now_string()
+        cur.execute("""INSERT INTO connected_components
+            (connected_component_id, node_db_id, component_definition_id, label, location, zone,
+             lifecycle_status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
+            (public_id, node[0], definition[0], values["label"], values["location"],
+             values["zone"], timestamp, timestamp))
+        connected_component_id = cur.lastrowid
+        _reconcile_capability_instances(cur, [connected_component_id])
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return get_connected_component(node_id, public_id)
+
+
+def update_connected_component(node_id, connected_component_id, values):
+    if isinstance(values, dict) and "definition_key" in values:
+        raise ValueError("definition_key is immutable")
+    values = _validate_connected_component_metadata(values)
+    if not values:
+        raise ValueError("Request body must not be empty")
+    conn = get_connection()
+    try:
+        row = conn.execute("""SELECT connected.id, connected.lifecycle_status
+            FROM connected_components AS connected JOIN nodes AS node ON node.id = connected.node_db_id
+            WHERE node.node_id = ? AND (connected.connected_component_id = ? OR connected.legacy_route_id = ?)""",
+            (node_id, connected_component_id, connected_component_id)).fetchone()
+        if row is None:
+            return None
+        if row[1] != "active":
+            raise ValueError("Removed connected components cannot be edited")
+        values["updated_at"] = now_string()
+        assignments = ", ".join(f"{key} = ?" for key in values)
+        conn.execute(f"UPDATE connected_components SET {assignments} WHERE id = ?", (*values.values(), row[0]))
+        conn.commit()
+    finally:
+        conn.close()
+    return get_connected_component(node_id, connected_component_id)
+
+
+def remove_connected_component(node_id, connected_component_id):
+    conn = get_connection()
+    try:
+        timestamp = now_string()
+        row = conn.execute("""SELECT connected.id
+            FROM connected_components AS connected
+            JOIN nodes AS node ON node.id = connected.node_db_id
+            WHERE node.node_id = ?
+              AND (connected.connected_component_id = ? OR connected.legacy_route_id = ?)
+              AND connected.lifecycle_status = 'active'""",
+            (node_id, connected_component_id, connected_component_id)).fetchone()
+        if row is None:
+            return False
+        conn.execute("""UPDATE connected_components
+            SET lifecycle_status = 'removed', removed_at = ?, updated_at = ?
+            WHERE id = ?""", (timestamp, timestamp, row[0]))
+        conn.execute("""UPDATE component_capability_instances
+            SET lifecycle_status = 'removed', removed_at = ?, updated_at = ?
+            WHERE connected_component_id = ? AND lifecycle_status = 'active'""",
+            (timestamp, timestamp, row[0]))
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def get_latest_telemetry(node_id, sensor_type):
@@ -418,8 +1159,12 @@ def get_nodes_overview(offline_threshold_seconds=60):
                    WHERE reports.node_db_id = n.id
                ) AS has_report,
                EXISTS (
-                   SELECT 1 FROM node_expected_capabilities AS expected
-                   WHERE expected.node_db_id = n.id
+                   SELECT 1 FROM component_capability_instances AS expected
+                   JOIN connected_components AS connected
+                     ON connected.id = expected.connected_component_id
+                   WHERE connected.node_db_id = n.id
+                     AND connected.lifecycle_status = 'active'
+                     AND expected.lifecycle_status = 'active'
                      AND NOT EXISTS (
                          SELECT 1 FROM node_reported_capabilities AS reported
                          WHERE reported.node_db_id = n.id
@@ -448,9 +1193,13 @@ def get_nodes_overview(offline_threshold_seconds=60):
                 {"id": item["id"], "name": item["name"]}
             )
     for item in conn.execute("""
-        SELECT expected.node_db_id, capability.capability_key
-        FROM node_expected_capabilities AS expected
+        SELECT DISTINCT connected.node_db_id, capability.capability_key
+        FROM component_capability_instances AS expected
+        JOIN connected_components AS connected
+          ON connected.id = expected.connected_component_id
         JOIN capabilities AS capability ON capability.id = expected.capability_id
+        WHERE connected.lifecycle_status = 'active'
+          AND expected.lifecycle_status = 'active'
         ORDER BY capability.display_name
     """):
         organization[item["node_db_id"]]["expected_capabilities"].append(
@@ -641,6 +1390,25 @@ def _validated_capability_ids(cur, capability_keys):
     return keys, ids
 
 
+def _validated_component_capability_ids(cur, capability_keys):
+    """Validate capability mappings allowed for physical sensor/actuator definitions."""
+    keys, ids = _validated_capability_ids(cur, capability_keys)
+    if not keys:
+        return keys, ids
+    placeholders = ", ".join("?" for _ in keys)
+    communication = [row[0] for row in cur.execute(f"""
+        SELECT capability_key FROM capabilities
+        WHERE capability_key IN ({placeholders}) AND capability_class = 'communication'
+        ORDER BY display_name
+    """, keys)]
+    if communication:
+        raise ValueError(
+            "Communication capabilities such as Wi-Fi and LoRaWAN cannot be assigned "
+            "to sensor/actuator component definitions"
+        )
+    return keys, ids
+
+
 def replace_expected_capabilities(node_id, capability_keys):
     """Atomically replace server-owned expected capabilities."""
     conn = get_connection()
@@ -701,9 +1469,17 @@ def get_node_capabilities(node_id):
         SELECT id, capability_key, display_name, capability_class, description
         FROM capabilities
     """)}
-    expected_ids = [row[0] for row in conn.execute(
-        "SELECT capability_id FROM node_expected_capabilities WHERE node_db_id = ?", (node[0],)
-    )]
+    derived_rows = conn.execute("""
+        SELECT capability_instance.capability_id, COUNT(*) AS instance_count
+        FROM component_capability_instances AS capability_instance
+        JOIN connected_components AS connected
+          ON connected.id = capability_instance.connected_component_id
+        WHERE connected.node_db_id = ?
+          AND connected.lifecycle_status = 'active'
+          AND capability_instance.lifecycle_status = 'active'
+        GROUP BY capability_instance.capability_id
+    """, (node[0],)).fetchall()
+    expected_counts = dict(derived_rows)
     reported_ids = [row[0] for row in conn.execute(
         "SELECT capability_id FROM node_reported_capabilities WHERE node_db_id = ?", (node[0],)
     )]
@@ -711,13 +1487,21 @@ def get_node_capabilities(node_id):
         "SELECT reported_at FROM node_capability_reports WHERE node_db_id = ?", (node[0],)
     ).fetchone()
     conn.close()
-    expected_set, reported_set = set(expected_ids), set(reported_ids)
-    ordered = lambda ids: sorted((definitions[item] for item in ids), key=lambda item: item["display_name"])
+    expected_set, reported_set = set(expected_counts), set(reported_ids)
+    ordered = lambda ids: sorted((definitions[item].copy() for item in ids), key=lambda item: item["display_name"])
+    expected = ordered(expected_set)
+    for item in expected:
+        item["count"] = expected_counts[item["id"]]
+        item.pop("id", None)
+    def clean(items):
+        for item in items:
+            item.pop("id", None)
+        return items
     return {
-        "expected": ordered(expected_set),
-        "reported": ordered(reported_set),
-        "missing": ordered(expected_set - reported_set) if report else [],
-        "unexpected": ordered(reported_set - expected_set) if report else [],
+        "expected": expected,
+        "reported": clean(ordered(reported_set)),
+        "missing": clean(ordered(expected_set - reported_set)) if report else [],
+        "unexpected": clean(ordered(reported_set - expected_set)) if report else [],
         "state": "unknown" if report is None else (
             "capability_mismatch" if expected_set - reported_set else "healthy"
         ),

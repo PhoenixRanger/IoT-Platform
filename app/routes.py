@@ -1,6 +1,6 @@
 import math
 
-from flask import Blueprint, jsonify, request, render_template
+from flask import Blueprint, jsonify, redirect, request, render_template, url_for
 
 from app.config import DEFAULT_NODE_ID
 from app.database import (
@@ -20,6 +20,16 @@ from app.database import (
     replace_expected_capabilities,
     rename_definition,
     update_node_registry,
+    create_component_definition,
+    create_connected_component,
+    delete_component_definition,
+    get_component_definition,
+    get_connected_component,
+    list_component_definitions,
+    list_connected_components,
+    remove_connected_component,
+    update_component_definition,
+    update_connected_component,
 )
 
 
@@ -41,6 +51,11 @@ def fleet_organization_page():
     return render_template("fleet_organization.html")
 
 
+@routes.route("/components")
+def component_library_page():
+    return render_template("components.html")
+
+
 @routes.route("/nodes/<node_id>")
 def node_details_page(node_id):
     if get_node_details(node_id) is None:
@@ -53,6 +68,20 @@ def node_technical_page(node_id):
     if get_node_details(node_id) is None:
         return render_template("node_technical.html", node_id=node_id), 404
     return render_template("node_technical.html", node_id=node_id)
+
+
+@routes.route("/nodes/<node_id>/components/<connected_component_id>")
+def connected_component_page(node_id, connected_component_id):
+    component = get_connected_component(node_id, connected_component_id)
+    if component is None:
+        return render_template("component_detail.html", node_id=node_id,
+                               connected_component_id=connected_component_id), 404
+    # Old PR-candidate URLs remain resolvable, but the canonical URL uses nc_….
+    if connected_component_id != component["connected_component_id"]:
+        return redirect(url_for("routes.connected_component_page", node_id=node_id,
+                                connected_component_id=component["connected_component_id"]))
+    return render_template("component_detail.html", node_id=node_id,
+                           connected_component_id=connected_component_id)
 
 
 @routes.route("/api/data", methods=["POST"])
@@ -104,6 +133,77 @@ def nodes_overview():
 @routes.route("/api/capabilities")
 def capabilities():
     return jsonify(get_capabilities())
+
+
+@routes.route("/api/components", methods=["GET", "POST"])
+def component_definitions():
+    if request.method == "GET":
+        return jsonify(list_component_definitions(
+            include_removed=request.args.get("include_removed") == "true"
+        ))
+    try:
+        return jsonify(create_component_definition(request.get_json(silent=True))), 201
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@routes.route("/api/components/<definition_key>", methods=["GET", "PATCH", "DELETE"])
+def component_definition(definition_key):
+    definition = get_component_definition(definition_key)
+    if definition is None:
+        return jsonify({"error": "Component definition not found"}), 404
+    if request.method == "GET":
+        return jsonify(definition)
+    if request.method == "DELETE":
+        result = delete_component_definition(definition_key)
+        if result == "active_reference":
+            return jsonify({
+                "error": (
+                    "This component cannot be deleted because it is currently assigned "
+                    "to one or more nodes. Remove it from all nodes before deleting the "
+                    "Component Library definition."
+                )
+            }), 409
+        return jsonify({"status": "removed"})
+    try:
+        return jsonify(update_component_definition(definition_key, request.get_json(silent=True)))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@routes.route("/api/nodes/<node_id>/components", methods=["GET", "POST"])
+def node_components(node_id):
+    if request.method == "GET":
+        include_removed = request.args.get("include_removed") == "true"
+        components = list_connected_components(node_id, include_removed)
+        if components is None:
+            return jsonify({"error": "Node not found"}), 404
+        return jsonify(components)
+    try:
+        return jsonify(create_connected_component(node_id, request.get_json(silent=True))), 201
+    except LookupError as error:
+        return jsonify({"error": str(error)}), 404
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@routes.route("/api/nodes/<node_id>/components/<connected_component_id>", methods=["GET", "PATCH", "DELETE"])
+def connected_component(node_id, connected_component_id):
+    component = get_connected_component(node_id, connected_component_id)
+    if component is None:
+        return jsonify({"error": "Connected component not found"}), 404
+    if request.method == "GET":
+        return jsonify(component)
+    if request.method == "DELETE":
+        if not remove_connected_component(node_id, connected_component_id):
+            return jsonify({"error": "Connected component is already removed"}), 409
+        return jsonify(get_connected_component(node_id, connected_component_id))
+    try:
+        return jsonify(update_connected_component(
+            node_id, connected_component_id, request.get_json(silent=True)
+        ))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
 
 
 def _validated_name_payload():
