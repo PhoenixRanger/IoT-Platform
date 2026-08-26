@@ -17,6 +17,7 @@ from app.database import (
     mutate_organization,
     get_recent_measurements,
     save_measurements,
+    save_instance_measurement,
     replace_expected_capabilities,
     rename_definition,
     update_node_registry,
@@ -27,9 +28,11 @@ from app.database import (
     get_connected_component,
     list_component_definitions,
     list_connected_components,
+    list_node_capability_instances,
     remove_connected_component,
     update_component_definition,
     update_connected_component,
+    update_capability_instance_label,
 )
 
 
@@ -92,10 +95,24 @@ def receive_data():
         return jsonify({"error": "Missing JSON payload"}), 400
 
     node_id = data.get("node_id")
-    readings = data.get("readings")
-
     if not node_id:
         return jsonify({"error": "Missing node_id"}), 400
+
+    # Canonical v1.16 HTTP debug fallback mirrors the MQTT packet. The old
+    # nested readings form remains bounded to this debug endpoint so deployed
+    # tools can migrate; MQTT has one instance-only runtime architecture.
+    if {"instance_id", "value", "unit"} <= set(data):
+        if set(data) != {"node_id", "instance_id", "value", "unit"}:
+            return jsonify({"error": "Unsupported telemetry fields"}), 400
+        try:
+            saved = [save_instance_measurement(
+                node_id, data["instance_id"], data["value"], data["unit"]
+            )]
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
+        return jsonify({"status": "saved", "node_id": node_id, "saved": saved})
+
+    readings = data.get("readings")
 
     if not readings or not isinstance(readings, dict):
         return jsonify({"error": "Missing or invalid readings object"}), 400
@@ -118,6 +135,28 @@ def receive_data():
 def readings():
     node_id = request.args.get("node_id", DEFAULT_NODE_ID)
     return jsonify(get_recent_measurements(node_id=node_id))
+
+
+@routes.route("/api/nodes/<node_id>/capability-instances")
+def capability_instances(node_id):
+    instances = list_node_capability_instances(node_id)
+    if instances is None:
+        return jsonify({"error": "Node not found"}), 404
+    return jsonify(instances)
+
+
+@routes.route("/api/nodes/<node_id>/capability-instances/<instance_id>", methods=["PATCH"])
+def capability_instance(node_id, instance_id):
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or set(payload) != {"label"}:
+        return jsonify({"error": "Request must contain only label"}), 400
+    try:
+        result = update_capability_instance_label(node_id, instance_id, payload["label"])
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    if result is None:
+        return jsonify({"error": "Capability instance not found"}), 404
+    return jsonify(result)
 
 
 @routes.route("/api/nodes")

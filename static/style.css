@@ -482,7 +482,10 @@ th {
 .component-table td { vertical-align:middle; }
 .component-table tr.menu-open { position:relative; z-index:10; }
 .component-detail-layout { display:grid; gap:20px; }
-.provided-capabilities { margin-top:0; }
+.provided-capabilities { margin-top:0; overflow:visible; }
+.capability-instance-table,.capability-instance-table table,.capability-instance-table tbody,.capability-instance-table tr,.capability-instance-table td { overflow:visible; }
+.capability-instance-table tr.menu-open { position:relative; z-index:110; }
+#editInstanceDialog { z-index:1000; }
 .danger-button { background:#991b1b; color:#fee2e2; }
 .choice-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:.45rem; margin:.65rem 0; }
 .choice-grid label { color:#111827; }

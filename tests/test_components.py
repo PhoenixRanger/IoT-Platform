@@ -685,7 +685,7 @@ def test_component_detail_cleanup_and_edit_contract(client):
     assert "Physical Instance" not in page
     assert "Reusable Definition" not in page
     assert "node component ID" not in page
-    assert "Provided Capabilities" in page and "Read-only in v1.15.0" in page
+    assert "Provided Capabilities" in page and "stable runtime capability instance" in page
     assert 'id="editComponent"' in page and "Edit Component" in page
     assert 'id="editComponentDialog"' in page
     assert 'row("Removed"' not in script and 'row("Lifecycle"' not in script

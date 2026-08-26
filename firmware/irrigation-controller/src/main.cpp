@@ -33,8 +33,18 @@ bool ms8607Available = false;
 unsigned long lastPublish = 0;
 unsigned long lastMs8607RecoveryAttempt = 0;
 
-void appendReading(String& json, const char* name, float value) {
-  if (!isnan(value) && !isinf(value)) json += ",\"" + String(name) + "\":" + String(value, 1);
+void publishReading(const char* instanceId, float value, const char* unit, bool includeDiagnostics = false) {
+  if (isnan(value) || isinf(value)) return;
+  String json = "{\"node_id\":\"" + String(IDENTITY.nodeId) + "\"";
+  json += ",\"instance_id\":\"" + String(instanceId) + "\"";
+  json += ",\"value\":" + String(value, 1) + ",\"unit\":\"" + String(unit) + "\"}";
+  if (includeDiagnostics) {
+    json.remove(json.length() - 1);
+    json += ",\"rssi\":" + String(WiFi.RSSI());
+    json += ",\"uptime_seconds\":" + String(millis() / 1000) + "}";
+  }
+  String topic = "sensors/" + String(IDENTITY.nodeId) + "/readings";
+  mqttClient.publish(topic.c_str(), json.c_str());
 }
 
 bool connectMqtt() {
@@ -91,19 +101,14 @@ void loop() {
   mqttClient.loop();
   if (millis() - lastPublish < PUBLISH_INTERVAL_MS) { delay(10); return; }
   lastPublish = millis();
-  String json = metadataJson(IDENTITY);
-  appendReading(json, "enclosure_temperature", dht.readTemperature());
-  appendReading(json, "enclosure_humidity", dht.readHumidity());
+  publishReading(ENCLOSURE_TEMPERATURE_INSTANCE_ID, dht.readTemperature(), "C", true);
+  publishReading(ENCLOSURE_HUMIDITY_INSTANCE_ID, dht.readHumidity(), "%");
   if (ms8607Available) {
     sensors_event_t pressure, temperature, humidity;
     if (ms8607.getEvent(&pressure, &temperature, &humidity)) {
-      appendReading(json, "outside_temperature", temperature.temperature);
-      appendReading(json, "outside_humidity", humidity.relative_humidity);
-      appendReading(json, "outside_pressure", pressure.pressure);
+      publishReading(OUTSIDE_TEMPERATURE_INSTANCE_ID, temperature.temperature, "C");
+      publishReading(OUTSIDE_HUMIDITY_INSTANCE_ID, humidity.relative_humidity, "%");
+      publishReading(OUTSIDE_PRESSURE_INSTANCE_ID, pressure.pressure, "hPa");
     }
   }
-  json += ",\"rssi\":" + String(WiFi.RSSI());
-  json += ",\"uptime_seconds\":" + String(millis() / 1000) + "}";
-  String topic = "sensors/" + String(IDENTITY.nodeId) + "/readings";
-  mqttClient.publish(topic.c_str(), json.c_str());
 }

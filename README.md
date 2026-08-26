@@ -4,20 +4,20 @@ A Raspberry Pi + ESP32 environmental monitoring dashboard and early-stage agricu
 
 ## Current Version
 
-**v1.15.0 — Sensor & Actuator Component Model**
+**v1.16.0 — Capability Instance Runtime Identity & Telemetry Integration**
 
-This release adds a normalized reusable Component Library, node-specific connected components with lifecycle-safe removal, and stable child capability instances that derive Expected counts while keeping firmware-reported capabilities independent.
+This release makes stable `ci_…` Capability Instance IDs the canonical identity of new runtime telemetry. Instance labels are editable presentation metadata used by the dashboard without changing the underlying telemetry series.
 
 ## Features
 
 - Original ESP32/DHT22 and Heltec WiFi LoRa 32 V3 dual-climate nodes
-- MQTT ingestion with HTTP POST fallback and automatic node registration
+- Capability Instance-aware MQTT ingestion with strict node ownership and lifecycle validation
 - Normalized SQLite measurements plus persistent node hardware/firmware metadata
 - Dynamic node/sensor selectors, cards, historical charts, node status, RSSI, and uptime
 - Editable node names, locations, categories, GPS coordinates, and administrative enabled state
 - Generic sensor, actuator, and communication capabilities with expected/reported comparison
 - Reusable sensor/actuator definitions with normalized interface and non-communication capability mappings
-- Connected-component inventory with historical removal and stable child `ci_…` capability-instance identities
+- Connected-component inventory with editable child labels and stable `ci_…` runtime identities
 - Count-aware Expected capabilities derived from active capability instances
 - Clickable dashboard status tile and `/nodes/<node_id>` node management details
 - Compact `/nodes` fleet registry with search, selection, and node navigation
@@ -45,13 +45,13 @@ Firmware has independent semantic versions, unrelated to the platform release. F
 
 ## Data and MQTT
 
-Nodes publish flat JSON to `sensors/<device_id>/readings`. Existing payloads remain accepted. New firmware reports its complete capability set on MQTT connection/reconnection and also reports `firmware_name`, `firmware_version`, `hardware_model`, and `ota_hostname`. These strings update the existing `nodes` row and are never measurements; numeric readings, RSSI, and uptime continue through the existing measurement model. Legacy payloads containing `hardware_revision` remain accepted, but that obsolete value is ignored by current Node Management.
+Nodes publish one Capability Instance-aware reading per packet to `sensors/<node_id>/readings`. The server rejects unknown, inactive, malformed, or cross-node Instance IDs and never creates inventory from telemetry. Firmware continues to report its complete type-level capability set on MQTT connection/reconnection. Historical legacy measurement rows remain readable, but legacy sensor-name packets are no longer a runtime ingestion protocol.
 
 ```json
-{"device_id":"irrigation_controller_001","firmware_name":"irrigation-controller","firmware_version":"1.0.0","hardware_model":"heltec-wifi-lora-32-v3","ota_hostname":"irrigation-controller-001","outside_temperature":24.8,"rssi":-61,"uptime_seconds":418}
+{"node_id":"irrigation_controller_001","instance_id":"ci_4004cf91b3","value":24.8,"unit":"C"}
 ```
 
-On startup, `init_db()` safely adds registry and device metadata columns to an older `sensor.db`; existing rows and measurements are retained. An idempotent `(node_id, timestamp DESC, id DESC)` measurements index bounds recent-cycle reads to one node's newest data and ensures every measurement in the latest 20 reporting timestamps is returned.
+On startup, `init_db()` safely adds nullable Instance identity to measurements and labels to the small Capability Instance inventory. Existing measurements and identities are retained; no history backfill occurs. A partial `(capability_instance_id, timestamp DESC, id DESC)` index supports Instance-series queries while the existing node/timestamp index continues to bound dashboard refreshes.
 
 HTTP fallback remains:
 
@@ -103,6 +103,8 @@ The OTA partition scheme is retained in every environment. Do not hardcode trans
 - `GET /api/nodes/<node_id>` — metadata and calculated runtime state
 - `PATCH /api/nodes/<node_id>` — update name, location, category, GPS, or enabled state
 - `GET /api/readings?node_id=<node_id>` — readings
+- `GET /api/nodes/<node_id>/capability-instances` — active Instance metadata for dashboard presentation
+- `PATCH /api/nodes/<node_id>/capability-instances/<ci_…>` — update an Instance label
 - `GET /api/node-status?node_id=<node_id>` — compatible status endpoint
 - `GET /nodes/<node_id>` — node-details page
 - `GET /nodes/<node_id>/technical` — technical/runtime/capability view
@@ -151,5 +153,6 @@ The public repository is intended to begin with the mature v1.10.1 working tree 
 - **v1.13.0** — fleet registry, search and selection foundation, and direct node navigation.
 - **v1.14.0** — groups, tags, fleet filters, bulk organization, and Details/Technical separation.
 - **v1.15.0** — reusable component definitions, node physical inventory, lifecycle removal, and component-derived Expected capabilities.
+- **v1.16.0** — immutable Capability Instance runtime telemetry identity, editable labels, and dashboard integration.
 
 Future work continues toward MQTT security, LoRaWAN, actuator and node management, and a dedicated Linux property server. See the architecture and operations documents for the current design and workflows.

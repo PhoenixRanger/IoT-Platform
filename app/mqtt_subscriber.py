@@ -10,23 +10,12 @@ from app.database import (
     init_db,
     replace_reported_capabilities,
     save_measurements,
+    save_instance_measurement,
     update_device_metadata,
 )
 
 
 RECONNECT_DELAY_SECONDS = 5
-SUPPORTED_SENSOR_TYPES = {
-    "temperature",
-    "humidity",
-    "rssi",
-    "uptime_seconds",
-    "outside_temperature",
-    "outside_humidity",
-    "outside_pressure",
-    "enclosure_temperature",
-    "enclosure_humidity",
-    "enclosure_pressure",
-}
 METADATA_FIELDS = {
     "node_type",
     "hardware_model",
@@ -52,9 +41,9 @@ def parse_reading_payload(payload):
     if not isinstance(data, dict):
         raise ValueError("Payload must be a JSON object")
 
-    device_id = data.get("device_id")
+    device_id = data.get("node_id", data.get("device_id"))
     if not isinstance(device_id, str) or not device_id.strip():
-        raise ValueError("Missing device_id")
+        raise ValueError("Missing node_id")
 
     metadata = {}
     for field in METADATA_FIELDS:
@@ -73,18 +62,28 @@ def parse_reading_payload(payload):
             raise ValueError("capabilities must be a list of non-empty strings")
         metadata["capabilities"] = list(dict.fromkeys(key.strip() for key in capabilities))
 
-    readings = {}
-    for sensor_type in SUPPORTED_SENSOR_TYPES:
-        if sensor_type not in data:
-            continue
+    readings = None
+    telemetry_fields = {"instance_id", "value", "unit"}
+    if telemetry_fields & set(data):
+        if not telemetry_fields <= set(data):
+            raise ValueError("Telemetry requires instance_id, value, and unit")
+        if isinstance(data["value"], bool) or not isinstance(data["value"], Real) \
+                or not math.isfinite(data["value"]):
+            raise ValueError("Telemetry value must be a finite number")
+        readings = {field: data[field] for field in telemetry_fields}
+        diagnostics = {}
+        for field in ("rssi", "uptime_seconds"):
+            if field not in data:
+                continue
+            value = data[field]
+            if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value):
+                raise ValueError(f"Invalid diagnostic value for {field}")
+            diagnostics[field] = value
+        if diagnostics:
+            readings["diagnostics"] = diagnostics
 
-        value = data[sensor_type]
-        if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value):
-            raise ValueError(f"Invalid numeric value for {sensor_type}: {value}")
-        readings[sensor_type] = value
-
-    if not readings and "capabilities" not in metadata:
-        raise ValueError("Payload must contain at least one valid supported reading")
+    if readings is None and "capabilities" not in metadata:
+        raise ValueError("Payload must contain instance-aware telemetry or capabilities metadata")
 
     return device_id.strip(), metadata, readings
 
@@ -143,7 +142,14 @@ def on_message(client, userdata, message):
         update_device_metadata(device_id, metadata)
         if capabilities is not None:
             replace_reported_capabilities(device_id, capabilities)
-        saved = save_measurements(device_id, readings) if readings else []
+        if readings:
+            diagnostics = readings.pop("diagnostics", {})
+            saved = [save_instance_measurement(device_id, **readings)]
+            # RSSI and uptime describe the node transport/runtime rather than a
+            # sensing or actuation channel, so they remain node diagnostics.
+            saved.extend(save_measurements(device_id, diagnostics))
+        else:
+            saved = []
     except ValueError as error:
         logger.warning("MQTT reading validation failed: %s", error)
     except Exception:

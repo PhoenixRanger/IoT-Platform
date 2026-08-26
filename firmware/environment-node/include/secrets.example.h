@@ -5,3 +5,6 @@ const char* MQTT_SERVER = "192.168.1.100";
 const char* OTA_PASSWORD = "CHOOSE_A_STRONG_OTA_PASSWORD";
 const char* NODE_ID = "environment_node_001";
 const char* OTA_HOSTNAME = "environment-node-001";
+// Copy the server-generated IDs shown on this node's component detail page.
+const char* TEMPERATURE_INSTANCE_ID = "ci_REPLACE_ME";
+const char* HUMIDITY_INSTANCE_ID = "ci_REPLACE_ME";

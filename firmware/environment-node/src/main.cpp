@@ -24,6 +24,19 @@ PubSubClient mqttClient(wifiClient);
 DHT dht(DHT_PIN, DHT_TYPE);
 unsigned long lastPublish = 0;
 
+void publishReading(const char* instanceId, float value, const char* unit, bool includeDiagnostics = false) {
+  String json = "{\"node_id\":\"" + String(IDENTITY.nodeId) + "\"";
+  json += ",\"instance_id\":\"" + String(instanceId) + "\"";
+  json += ",\"value\":" + String(value, 1) + ",\"unit\":\"" + String(unit) + "\"}";
+  if (includeDiagnostics) {
+    json.remove(json.length() - 1);
+    json += ",\"rssi\":" + String(WiFi.RSSI());
+    json += ",\"uptime_seconds\":" + String(millis() / 1000) + "}";
+  }
+  String topic = "sensors/" + String(IDENTITY.nodeId) + "/readings";
+  mqttClient.publish(topic.c_str(), json.c_str());
+}
+
 bool connectMqtt() {
   if (mqttClient.connected()) return true;
   if (!mqttClient.connect(IDENTITY.nodeId)) return false;
@@ -55,11 +68,6 @@ void loop() {
   float temperature = dht.readTemperature();
   float humidity = dht.readHumidity();
   if (isnan(temperature) || isnan(humidity)) return;
-  String json = metadataJson(IDENTITY);
-  json += ",\"temperature\":" + String(temperature, 1);
-  json += ",\"humidity\":" + String(humidity, 1);
-  json += ",\"rssi\":" + String(WiFi.RSSI());
-  json += ",\"uptime_seconds\":" + String(millis() / 1000) + "}";
-  String topic = "sensors/" + String(IDENTITY.nodeId) + "/readings";
-  mqttClient.publish(topic.c_str(), json.c_str());
+  publishReading(TEMPERATURE_INSTANCE_ID, temperature, "C", true);
+  publishReading(HUMIDITY_INSTANCE_ID, humidity, "%");
 }

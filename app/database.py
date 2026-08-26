@@ -1,6 +1,7 @@
 import sqlite3
 import re
 import secrets
+import math
 from datetime import datetime
 
 from app.config import DB_NAME, DEFAULT_NODE_ID, READING_LIMIT
@@ -143,9 +144,15 @@ def init_db():
             value REAL NOT NULL,
             unit TEXT NOT NULL,
             timestamp TEXT NOT NULL,
-            FOREIGN KEY (node_db_id) REFERENCES nodes(id)
+            capability_instance_id TEXT,
+            FOREIGN KEY (node_db_id) REFERENCES nodes(id),
+            FOREIGN KEY (capability_instance_id)
+                REFERENCES component_capability_instances(capability_instance_id)
         )
     """)
+    measurement_columns = {row[1] for row in cur.execute("PRAGMA table_info(measurements)")}
+    if "capability_instance_id" not in measurement_columns:
+        cur.execute("ALTER TABLE measurements ADD COLUMN capability_instance_id TEXT")
 
     # Supports bounded recent-cycle lookups for one node. The dashboard first
     # walks this covering index only until it finds READING_LIMIT timestamps,
@@ -366,6 +373,7 @@ def init_db():
             capability_instance_id TEXT NOT NULL UNIQUE,
             connected_component_id INTEGER NOT NULL,
             capability_id INTEGER NOT NULL,
+            label TEXT,
             lifecycle_status TEXT NOT NULL DEFAULT 'active'
                 CHECK (lifecycle_status IN ('active', 'removed')),
             created_at TEXT NOT NULL,
@@ -376,6 +384,16 @@ def init_db():
             FOREIGN KEY (capability_id) REFERENCES capabilities(id) ON DELETE RESTRICT
         )
     """)
+    instance_columns = {
+        row[1] for row in cur.execute("PRAGMA table_info(component_capability_instances)")
+    }
+    if "label" not in instance_columns:
+        cur.execute("ALTER TABLE component_capability_instances ADD COLUMN label TEXT")
+    # Bounded inventory migration: telemetry history is deliberately untouched.
+    cur.execute("""UPDATE component_capability_instances
+        SET label = (SELECT display_name FROM capabilities
+                     WHERE capabilities.id = component_capability_instances.capability_id)
+        WHERE label IS NULL OR trim(label) = ''""")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_component_interfaces_definition ON component_interface_requirements (component_definition_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_component_capabilities_definition ON component_capabilities (component_definition_id, capability_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_connected_components_node_active ON connected_components (node_db_id, lifecycle_status)")
@@ -391,6 +409,9 @@ def init_db():
     cur.execute("""CREATE INDEX IF NOT EXISTS idx_capability_instances_capability
                    ON component_capability_instances
                        (capability_id, lifecycle_status)""")
+    cur.execute("""CREATE INDEX IF NOT EXISTS idx_measurements_instance_timestamp_id
+                   ON measurements (capability_instance_id, timestamp DESC, id DESC)
+                   WHERE capability_instance_id IS NOT NULL""")
     _seed_component_definitions(cur)
     _reconcile_capability_instances(cur, include_removed_missing=True)
 
@@ -860,10 +881,10 @@ def _reconcile_capability_instances(
                 for capability_id in sorted(desired - historical_capabilities):
                     removed_at = parent_removed_at or timestamp
                     cur.execute("""INSERT INTO component_capability_instances
-                        (capability_instance_id, connected_component_id, capability_id,
+                        (capability_instance_id, connected_component_id, capability_id, label,
                          lifecycle_status, created_at, updated_at, removed_at)
-                        VALUES (?, ?, ?, 'removed', ?, ?, ?)""",
-                        (_new_capability_instance_id(cur), connected_id, capability_id,
+                        VALUES (?, ?, ?, (SELECT display_name FROM capabilities WHERE id = ?), 'removed', ?, ?, ?)""",
+                        (_new_capability_instance_id(cur), connected_id, capability_id, capability_id,
                          removed_at, removed_at, removed_at))
             continue
 
@@ -873,10 +894,10 @@ def _reconcile_capability_instances(
                 WHERE id = ?""", (timestamp, timestamp, active_by_capability[capability_id]))
         for capability_id in sorted(desired - set(active_by_capability)):
             cur.execute("""INSERT INTO component_capability_instances
-                (capability_instance_id, connected_component_id, capability_id,
+                (capability_instance_id, connected_component_id, capability_id, label,
                  lifecycle_status, created_at, updated_at)
-                VALUES (?, ?, ?, 'active', ?, ?)""",
-                (_new_capability_instance_id(cur), connected_id, capability_id,
+                VALUES (?, ?, ?, (SELECT display_name FROM capabilities WHERE id = ?), 'active', ?, ?)""",
+                (_new_capability_instance_id(cur), connected_id, capability_id, capability_id,
                  timestamp, timestamp))
 
 
@@ -934,6 +955,7 @@ def _connected_component_rows(conn, node_id, connected_component_id=None, includ
     for row in conn.execute(f"""
         SELECT capability_instance.connected_component_id,
                capability_instance.capability_instance_id,
+               capability_instance.label,
                capability_instance.lifecycle_status,
                capability_instance.created_at,
                capability_instance.updated_at,
@@ -950,7 +972,7 @@ def _connected_component_rows(conn, node_id, connected_component_id=None, includ
         if item["lifecycle_status"] == "active" and row["lifecycle_status"] != "active":
             continue
         item["capability_instances"].append({key: row[key] for key in (
-            "capability_instance_id", "capability_key", "display_name",
+            "capability_instance_id", "label", "capability_key", "display_name",
             "capability_class", "description", "lifecycle_status",
             "created_at", "updated_at", "removed_at",
         )})
@@ -1563,6 +1585,102 @@ def save_measurements(node_id, readings):
     return saved
 
 
+CAPABILITY_INSTANCE_ID_PATTERN = re.compile(r"^ci_[0-9a-f]{10}$")
+
+
+def save_instance_measurement(node_id, instance_id, value, unit):
+    """Persist one canonical runtime channel after strict inventory ownership checks."""
+    if not isinstance(instance_id, str) or not CAPABILITY_INSTANCE_ID_PATTERN.fullmatch(instance_id):
+        raise ValueError("Malformed capability instance ID")
+    if isinstance(value, bool):
+        raise ValueError("value must be a finite number")
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("value must be a finite number") from error
+    if not math.isfinite(numeric_value):
+        raise ValueError("value must be a finite number")
+    if not isinstance(unit, str) or not unit.strip() or len(unit.strip()) > 32:
+        raise ValueError("unit must be a non-empty string of at most 32 characters")
+
+    conn = get_connection()
+    try:
+        row = conn.execute("""
+            SELECT node.id, capability.capability_key
+            FROM component_capability_instances AS instance
+            JOIN connected_components AS connected ON connected.id = instance.connected_component_id
+            JOIN nodes AS node ON node.id = connected.node_db_id
+            JOIN capabilities AS capability ON capability.id = instance.capability_id
+            WHERE instance.capability_instance_id = ?
+              AND instance.lifecycle_status = 'active'
+              AND connected.lifecycle_status = 'active'
+        """, (instance_id,)).fetchone()
+        if row is None:
+            raise ValueError("Unknown or inactive capability instance ID")
+        supplied_node = conn.execute("SELECT id FROM nodes WHERE node_id = ?", (node_id,)).fetchone()
+        if supplied_node is None or supplied_node[0] != row[0]:
+            raise ValueError("Capability instance does not belong to supplied node")
+        timestamp = now_string()
+        conn.execute("""INSERT INTO measurements
+            (node_db_id, node_id, sensor_type, value, unit, timestamp, capability_instance_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (row[0], node_id, row[1], numeric_value, unit.strip(), timestamp, instance_id))
+        conn.commit()
+        return {"node_id": node_id, "instance_id": instance_id, "value": numeric_value,
+                "unit": unit.strip(), "timestamp": timestamp}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def list_node_capability_instances(node_id):
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT instance.capability_instance_id AS instance_id, instance.label,
+               capability.display_name AS capability, capability.capability_class,
+               connected.connected_component_id
+        FROM component_capability_instances AS instance
+        JOIN connected_components AS connected ON connected.id = instance.connected_component_id
+        JOIN nodes AS node ON node.id = connected.node_db_id
+        JOIN capabilities AS capability ON capability.id = instance.capability_id
+        WHERE node.node_id = ? AND instance.lifecycle_status = 'active'
+          AND connected.lifecycle_status = 'active'
+        ORDER BY instance.id
+    """, (node_id,)).fetchall()
+    exists = conn.execute("SELECT 1 FROM nodes WHERE node_id = ?", (node_id,)).fetchone()
+    conn.close()
+    return [dict(row) for row in rows] if exists else None
+
+
+def update_capability_instance_label(node_id, instance_id, label):
+    if not isinstance(label, str) or not label.strip():
+        raise ValueError("label must be a non-empty string")
+    if len(label.strip()) > 120:
+        raise ValueError("label must be at most 120 characters")
+    conn = get_connection()
+    try:
+        row = conn.execute("""SELECT instance.id, instance.lifecycle_status
+            FROM component_capability_instances AS instance
+            JOIN connected_components AS connected ON connected.id = instance.connected_component_id
+            JOIN nodes AS node ON node.id = connected.node_db_id
+            WHERE node.node_id = ? AND instance.capability_instance_id = ?""",
+            (node_id, instance_id)).fetchone()
+        if row is None:
+            return None
+        if row[1] != "active":
+            raise ValueError("Removed capability instances cannot be edited")
+        conn.execute("UPDATE component_capability_instances SET label = ?, updated_at = ? WHERE id = ?",
+                     (label.strip(), now_string(), row[0]))
+        conn.commit()
+    finally:
+        conn.close()
+    return next(item for item in list_node_capability_instances(node_id)
+                if item["instance_id"] == instance_id)
+
+
 def get_node_status(node_id, offline_threshold_seconds=60):
     conn = get_connection()
     cur = conn.cursor()
@@ -1633,7 +1751,7 @@ def get_recent_measurements(node_id=None):
     placeholders = ", ".join("?" for _ in timestamps)
     rows = cur.execute(
         f"""
-        SELECT timestamp, sensor_type, value, unit
+        SELECT timestamp, sensor_type, capability_instance_id, value, unit
         FROM measurements
         WHERE node_id = ? AND timestamp IN ({placeholders})
         ORDER BY timestamp ASC, id ASC
@@ -1644,13 +1762,16 @@ def get_recent_measurements(node_id=None):
 
     grouped = {}
 
-    for timestamp, sensor_type, value, unit in rows:
+    for timestamp, sensor_type, capability_instance_id, value, unit in rows:
         if timestamp not in grouped:
             grouped[timestamp] = {
                 "timestamp": timestamp,
                 "node_id": node_id
             }
 
-        grouped[timestamp][sensor_type] = value
+        series_id = capability_instance_id or sensor_type
+        grouped[timestamp][series_id] = value
+        if capability_instance_id is not None:
+            grouped[timestamp].setdefault("_units", {})[series_id] = unit
 
     return list(grouped.values())

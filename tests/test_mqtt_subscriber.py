@@ -1,234 +1,235 @@
 import json
+import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
-from app.mqtt_subscriber import parse_reading_payload
+from app.mqtt_subscriber import on_message, parse_reading_payload
 
 
 def parse(payload):
     return parse_reading_payload(json.dumps(payload))
 
 
-def test_existing_temperature_humidity_payload_remains_valid():
-    device_id, metadata, readings = parse({
-        "device_id": "environment_node_001",
-        "temperature": 24.8,
-        "humidity": 58.0,
-        "rssi": -62,
-        "uptime_seconds": 1234,
+def provision(client, node_id="node-a", definition_key="aosong-dht22"):
+    from app.database import save_measurements
+    save_measurements(node_id, {"temperature": 1})
+    component = client.post(f"/api/nodes/{node_id}/components", json={
+        "definition_key": definition_key, "label": "Sensor"
+    }).get_json()
+    return component["capability_instances"]
+
+
+def test_instance_packet_schema_and_capability_metadata_are_separate():
+    node, metadata, reading = parse({
+        "node_id": "node-a", "instance_id": "ci_0123456789", "value": 24.8, "unit": "C"
     })
-
-    assert device_id == "environment_node_001"
+    assert node == "node-a"
     assert metadata == {}
-    assert readings == {
-        "temperature": 24.8,
-        "humidity": 58.0,
-        "rssi": -62,
-        "uptime_seconds": 1234,
-    }
+    assert reading == {"instance_id": "ci_0123456789", "value": 24.8, "unit": "C"}
+    node, metadata, reading = parse({"device_id": "node-a", "capabilities": ["wifi", "wifi"]})
+    assert metadata == {"capabilities": ["wifi"]}
+    assert reading is None
 
 
-def test_full_dual_climate_payload_is_valid():
-    payload = {
-        "device_id": "irrigation_controller_001",
-        "outside_temperature": 24.8,
-        "outside_humidity": 61.2,
-        "outside_pressure": 1009.4,
-        "enclosure_temperature": 31.5,
-        "enclosure_humidity": 42.1,
-        "rssi": -61,
-        "uptime_seconds": 418,
-    }
-
-    device_id, metadata, readings = parse(payload)
-
-    assert device_id == payload.pop("device_id")
-    assert metadata == {}
-    assert readings == payload
-
-
-@pytest.mark.parametrize("readings", [
-    {
-        "outside_temperature": 24.8,
-        "outside_humidity": 61.2,
-        "outside_pressure": 1009.4,
-    },
-    {
-        "enclosure_temperature": 31.5,
-        "enclosure_humidity": 42.1,
-    },
+@pytest.mark.parametrize("payload", [
+    {}, {"node_id": ""}, {"node_id": "   "}, {"node_id": "node"},
+    {"node_id": "node", "outside_temperature": 2},
+    {"node_id": "node", "instance_id": "ci_0123456789", "value": 2},
+    {"node_id": "node", "instance_id": "ci_0123456789", "value": "24.8", "unit": "C"},
+    {"node_id": "node", "instance_id": "ci_0123456789", "value": None, "unit": "C"},
+    {"node_id": "node", "instance_id": "ci_0123456789", "value": True, "unit": "C"},
+    {"node_id": "node", "instance_id": "ci_0123456789", "value": float("inf"), "unit": "C"},
 ])
-def test_partial_climate_payloads_are_valid(readings):
-    _, metadata, parsed_readings = parse({"device_id": "irrigation_controller_001", **readings})
-    assert metadata == {}
-    assert parsed_readings == readings
-
-
-def test_payload_containing_only_device_id_is_rejected():
-    with pytest.raises(ValueError, match="at least one"):
-        parse({"device_id": "irrigation_controller_001"})
-
-
-@pytest.mark.parametrize("device_id", [None, "", "   "])
-def test_missing_or_empty_device_id_is_rejected(device_id):
-    payload = {"outside_temperature": 24.8}
-    if device_id is not None:
-        payload["device_id"] = device_id
-
-    with pytest.raises(ValueError, match="Missing device_id"):
+def test_legacy_incomplete_and_invalid_packets_are_rejected(payload):
+    with pytest.raises(ValueError):
         parse(payload)
 
 
-def test_unknown_field_is_not_accepted_as_a_measurement():
-    _, metadata, readings = parse({
-        "device_id": "irrigation_controller_001",
-        "outside_temperature": 24.8,
-        "soil_probe": 99,
-    })
-    assert metadata == {}
-    assert readings == {"outside_temperature": 24.8}
+def test_valid_instance_is_persisted_and_dashboard_metadata_renames(client, isolated_database):
+    instances = provision(client)
+    temperature = next(item for item in instances if item["capability_key"] == "temperature_measurement")
+    payload = json.dumps({"node_id": "node-a", "instance_id": temperature["capability_instance_id"],
+                          "value": 22.5, "unit": "C"}).encode()
+    on_message(None, None, SimpleNamespace(payload=payload, topic="sensors/node-a/readings"))
+    readings = client.get("/api/readings?node_id=node-a").get_json()
+    assert readings[-1][temperature["capability_instance_id"]] == 22.5
+    assert readings[-1]["_units"][temperature["capability_instance_id"]] == "C"
+    metadata = client.get("/api/nodes/node-a/capability-instances").get_json()
+    assert all("unit" not in item for item in metadata)
 
-    with pytest.raises(ValueError, match="at least one"):
-        parse({"device_id": "irrigation_controller_001", "soil_probe": 99})
-
-
-@pytest.mark.parametrize("value", ["warm", "24.8", None, True])
-def test_non_numeric_sensor_values_are_rejected(value):
-    with pytest.raises(ValueError, match="Invalid numeric value"):
-        parse({"device_id": "irrigation_controller_001", "outside_temperature": value})
-
-
-@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
-def test_non_finite_sensor_values_are_rejected(value):
-    with pytest.raises(ValueError, match="Invalid numeric value"):
-        parse({"device_id": "irrigation_controller_001", "outside_temperature": value})
-
-
-def test_metadata_is_extracted_separately_from_measurements():
-    device_id, metadata, readings = parse({
-        "device_id": "irrigation_controller_001",
-        "firmware_name": "irrigation-controller",
-        "firmware_version": "1.0.0",
-        "hardware_model": "heltec-wifi-lora-32-v3",
-        "hardware_revision": "prototype-a",
-        "ota_hostname": "irrigation-controller-001",
-        "outside_temperature": 24.8,
-    })
-    assert device_id == "irrigation_controller_001"
-    assert metadata == {
-        "firmware_name": "irrigation-controller",
-        "firmware_version": "1.0.0",
-        "hardware_model": "heltec-wifi-lora-32-v3",
-        "hardware_revision": "prototype-a",
-        "ota_hostname": "irrigation-controller-001",
-    }
-    assert readings == {"outside_temperature": 24.8}
+    # The same Generic Capability may report a different runtime unit; neither
+    # persistence nor presentation metadata replaces it with an assumed unit.
+    on_message(None, None, SimpleNamespace(payload=json.dumps({
+        "node_id": "node-a", "instance_id": temperature["capability_instance_id"],
+        "value": 72.5, "unit": "F",
+    }).encode(), topic="sensors/node-a/readings"))
+    latest = client.get("/api/readings?node_id=node-a").get_json()[-1]
+    assert latest[temperature["capability_instance_id"]] == 72.5
+    assert latest["_units"][temperature["capability_instance_id"]] == "F"
+    dashboard_script = client.get("/static/script.js").get_data(as_text=True)
+    assert 'reading?._units?.[sensorType]' in dashboard_script
+    assert 'instanceMetadata[sensorType].unit' not in dashboard_script
+    renamed = client.patch(f"/api/nodes/node-a/capability-instances/{temperature['capability_instance_id']}",
+                           json={"label": "North Greenhouse Air"}).get_json()
+    assert renamed["label"] == "North Greenhouse Air"
+    assert "unit" not in renamed
+    assert client.get("/api/readings?node_id=node-a").get_json()[-1]["_units"][temperature["capability_instance_id"]] == "F"
+    with sqlite3.connect(isolated_database) as connection:
+        row = connection.execute("SELECT capability_instance_id, sensor_type FROM measurements WHERE capability_instance_id IS NOT NULL").fetchone()
+    assert row == (temperature["capability_instance_id"], "temperature_measurement")
 
 
-def test_invalid_metadata_is_rejected():
-    with pytest.raises(ValueError, match="Invalid metadata"):
-        parse({"device_id": "node", "firmware_version": 1.0, "rssi": -60})
+def test_unknown_malformed_cross_node_and_removed_instances_rejected(client, isolated_database, caplog):
+    a = provision(client, "node-a")[0]
+    provision(client, "node-b")
+    packets = [
+        {"node_id": "node-a", "instance_id": "ci_bad", "value": 1, "unit": "%"},
+        {"node_id": "node-a", "instance_id": "ci_0000000000", "value": 1, "unit": "%"},
+        {"node_id": "node-b", "instance_id": a["capability_instance_id"], "value": 1, "unit": "%"},
+    ]
+    for packet in packets:
+        on_message(None, None, SimpleNamespace(payload=json.dumps(packet).encode(), topic="test"))
+    with sqlite3.connect(isolated_database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM measurements WHERE capability_instance_id IS NOT NULL").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM component_capability_instances").fetchone()[0] == 4
+    assert "validation failed" in caplog.text
 
 
-def test_on_message_persists_metadata_and_measurements(isolated_database):
-    from types import SimpleNamespace
-    from app.database import get_node, get_recent_measurements
-    from app.mqtt_subscriber import on_message
+def test_removed_instance_is_rejected(client, isolated_database, caplog):
+    from app.database import save_measurements
 
-    payload = json.dumps({
-        "device_id": "node_001",
-        "firmware_name": "environment-node",
-        "firmware_version": "1.0.0",
-        "hardware_model": "az-delivery-esp32-devkitc-v2",
-        "hardware_revision": "prototype-a",
-        "temperature": 22.5,
-    }).encode()
-    on_message(None, None, SimpleNamespace(payload=payload, topic="sensors/node_001/readings"))
-    node = get_node("node_001")
-    assert node["firmware_version"] == "1.0.0"
-    assert "hardware_revision" not in node
-    assert get_recent_measurements("node_001")[0]["temperature"] == 22.5
+    save_measurements("node-a", {"temperature": 1})
+    component = client.post("/api/nodes/node-a/components", json={
+        "definition_key": "aosong-dht22", "label": "Retired Sensor",
+    }).get_json()
+    instance_id = component["capability_instances"][0]["capability_instance_id"]
+    assert client.delete(
+        f"/api/nodes/node-a/components/{component['connected_component_id']}"
+    ).status_code == 200
+    on_message(None, None, SimpleNamespace(payload=json.dumps({
+        "node_id": "node-a", "instance_id": instance_id, "value": 20, "unit": "C",
+    }).encode(), topic="test"))
+    with sqlite3.connect(isolated_database) as connection:
+        assert connection.execute("""SELECT COUNT(*) FROM measurements
+            WHERE capability_instance_id = ?""", (instance_id,)).fetchone()[0] == 0
+    assert "Unknown or inactive capability instance ID" in caplog.text
 
 
-def test_mqtt_cannot_overwrite_registry_metadata(isolated_database):
-    from types import SimpleNamespace
-    from app.database import (
-        get_node, get_recent_measurements, save_measurements, update_node_registry,
-    )
-    from app.mqtt_subscriber import on_message
+def test_repeated_capabilities_are_independent_streams(client):
+    first = provision(client, "node-a", "generic-analog-soil-moisture-sensor")[0]
+    second = client.post("/api/nodes/node-a/components", json={
+        "definition_key": "generic-analog-soil-moisture-sensor", "label": "Probe B"
+    }).get_json()["capability_instances"][0]
+    assert first["capability_instance_id"] != second["capability_instance_id"]
+    for instance, value in ((first, 31), (second, 27)):
+        on_message(None, None, SimpleNamespace(payload=json.dumps({
+            "node_id": "node-a", "instance_id": instance["capability_instance_id"],
+            "value": value, "unit": "%"}).encode(), topic="test"))
+    readings = client.get("/api/readings?node_id=node-a").get_json()
+    assert next(row[first["capability_instance_id"]] for row in readings if first["capability_instance_id"] in row) == 31
+    assert next(row[second["capability_instance_id"]] for row in readings if second["capability_instance_id"] in row) == 27
 
-    save_measurements("node_001", {"temperature": 20})
-    update_node_registry("node_001", {
+
+@pytest.mark.parametrize("field,value", [
+    ("firmware_name", 1), ("firmware_version", None), ("hardware_model", " "),
+    ("ota_hostname", False), ("node_type", 3.2),
+])
+def test_malformed_device_metadata_is_rejected(field, value):
+    with pytest.raises(ValueError, match=f"Invalid metadata value for {field}"):
+        parse({"node_id": "node-a", "capabilities": ["wifi"], field: value})
+
+
+def test_device_metadata_and_instance_telemetry_update_only_device_owned_fields(client):
+    from app.database import get_node, update_node_registry
+
+    instance = provision(client)[0]
+    update_node_registry("node-a", {
         "name": "Server Name", "location": "Server Location", "category": "Climate",
         "latitude": 51.5, "longitude": -0.1, "enabled": False,
     })
-    payload = json.dumps({
-        "device_id": "node_001", "name": "Device Name", "location": "Device Location",
-        "category": "Device Category", "latitude": 0, "longitude": 0, "enabled": True,
-        "node_type": "legacy-compatible", "hardware_model": "esp32", "firmware_version": "1.1.0",
-        "ota_hostname": "node-001", "temperature": 21,
-    }).encode()
-    on_message(None, None, SimpleNamespace(payload=payload, topic="sensors/node_001/readings"))
-
-    node = get_node("node_001")
-    assert node["name"] == "Server Name"
-    assert node["location"] == "Server Location"
-    assert node["category"] == "Climate"
-    assert node["latitude"] == 51.5
-    assert node["longitude"] == -0.1
-    assert node["enabled"] is False
-    assert node["node_type"] == "legacy-compatible"
-    assert node["hardware_model"] == "esp32"
-    assert node["firmware_version"] == "1.1.0"
-    assert node["ota_hostname"] == "node-001"
-    assert get_recent_measurements("node_001")[-1]["temperature"] == 21
-
-
-def test_capability_only_metadata_payload_is_parsed():
-    device_id, metadata, readings = parse({
-        "device_id": "node", "capabilities": ["wifi", "wifi", "temperature_measurement"]
-    })
-    assert device_id == "node"
-    assert metadata["capabilities"] == ["wifi", "temperature_measurement"]
-    assert readings == {}
+    on_message(None, None, SimpleNamespace(payload=json.dumps({
+        "node_id": "node-a", "instance_id": instance["capability_instance_id"],
+        "value": 44, "unit": "%", "firmware_name": "environment-node",
+        "firmware_version": "1.2.3", "hardware_model": "esp32",
+        "ota_hostname": "node-a", "node_type": "field-node",
+        "name": "Device Name", "location": "Device Location", "category": "Device Category",
+        "latitude": 0, "longitude": 0, "enabled": True,
+    }).encode(), topic="test"))
+    node = get_node("node-a")
+    assert {key: node[key] for key in ("name", "location", "category", "latitude", "longitude", "enabled")} == {
+        "name": "Server Name", "location": "Server Location", "category": "Climate",
+        "latitude": 51.5, "longitude": -0.1, "enabled": False,
+    }
+    assert (node["firmware_name"], node["firmware_version"], node["hardware_model"],
+            node["ota_hostname"], node["node_type"]) == (
+        "environment-node", "1.2.3", "esp32", "node-a", "field-node")
 
 
 @pytest.mark.parametrize("capabilities", ["wifi", [1], [""], None])
-def test_malformed_capabilities_are_rejected(capabilities):
+def test_malformed_capability_reports_are_rejected(capabilities):
     with pytest.raises(ValueError, match="capabilities"):
-        parse({"device_id": "node", "capabilities": capabilities, "rssi": -60})
+        parse({"device_id": "node-a", "capabilities": capabilities})
 
 
-def test_mqtt_reported_capabilities_remain_independent_from_legacy_expected(isolated_database):
-    import sqlite3
-    from types import SimpleNamespace
-    from app.database import get_node_capabilities, replace_expected_capabilities, save_measurements
-    from app.mqtt_subscriber import on_message
-    save_measurements("node", {"temperature": 20})
-    replace_expected_capabilities("node", ["temperature_measurement"])
-    for capabilities in [["temperature_measurement", "wifi"], ["humidity_measurement"]]:
-        message = SimpleNamespace(payload=json.dumps({
-            "device_id": "node", "capabilities": capabilities
-        }).encode(), topic="sensors/node/readings")
-        on_message(None, None, message)
-    comparison = get_node_capabilities("node")
-    assert comparison["expected"] == []
-    assert [item["capability_key"] for item in comparison["reported"]] == ["humidity_measurement"]
-    with sqlite3.connect(isolated_database) as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM node_expected_capabilities"
-        ).fetchone()[0] == 1
-    assert comparison["reported_at"] is not None
+def test_capability_only_reports_are_deduplicated_and_independent(client):
+    from app.database import get_node_capabilities
+
+    instance = provision(client)[0]
+    report = SimpleNamespace(payload=json.dumps({
+        "device_id": "node-a",
+        "capabilities": ["wifi", "temperature_measurement", "wifi"],
+    }).encode(), topic="test")
+    on_message(None, None, report)
+    before = get_node_capabilities("node-a")
+    assert [item["capability_key"] for item in before["reported"]] == ["temperature_measurement", "wifi"]
+    assert {item["capability_key"]: item["count"] for item in before["expected"]} == {
+        "humidity_measurement": 1, "temperature_measurement": 1,
+    }
+    client.patch(f"/api/nodes/node-a/capability-instances/{instance['capability_instance_id']}",
+                 json={"label": "Renamed"})
+    after = get_node_capabilities("node-a")
+    assert after["expected"] == before["expected"]
+    assert after["reported"] == before["reported"]
 
 
-def test_unknown_mqtt_capability_keeps_previous_set_and_registry(isolated_database):
-    from types import SimpleNamespace
+def test_unknown_reported_capability_preserves_previous_set_and_registry(isolated_database, caplog):
     from app.database import get_capabilities, get_node_capabilities, replace_reported_capabilities
-    from app.mqtt_subscriber import on_message
-    replace_reported_capabilities("node", ["wifi"])
-    before = {item["capability_key"] for item in get_capabilities()}
+
+    replace_reported_capabilities("node-a", ["wifi"])
+    registered = get_capabilities()
     on_message(None, None, SimpleNamespace(payload=json.dumps({
-        "device_id": "node", "capabilities": ["unregistered_capability"]
-    }).encode(), topic="sensors/node/readings"))
-    assert {item["capability_key"] for item in get_capabilities()} == before
-    assert [item["capability_key"] for item in get_node_capabilities("node")["reported"]] == ["wifi"]
+        "device_id": "node-a", "capabilities": ["unregistered_capability"],
+    }).encode(), topic="test"))
+    assert get_capabilities() == registered
+    assert [item["capability_key"] for item in get_node_capabilities("node-a")["reported"]] == ["wifi"]
+    assert "Unknown capability key" in caplog.text
+
+
+@pytest.mark.parametrize("field,value", [
+    ("rssi", "strong"), ("rssi", True), ("rssi", float("inf")),
+    ("uptime_seconds", None), ("uptime_seconds", float("nan")),
+])
+def test_invalid_node_diagnostics_are_rejected(field, value):
+    with pytest.raises(ValueError, match=f"Invalid diagnostic value for {field}"):
+        parse({"node_id": "node-a", "instance_id": "ci_0123456789",
+               "value": 1, "unit": "C", field: value})
+
+
+def test_diagnostics_remain_node_measurements_and_do_not_create_instances(client, isolated_database):
+    instance = provision(client)[0]
+    with sqlite3.connect(isolated_database) as connection:
+        before = connection.execute("SELECT COUNT(*) FROM component_capability_instances").fetchone()[0]
+    on_message(None, None, SimpleNamespace(payload=json.dumps({
+        "node_id": "node-a", "instance_id": instance["capability_instance_id"],
+        "value": 21, "unit": "C", "rssi": -61, "uptime_seconds": 418,
+    }).encode(), topic="test"))
+    readings = client.get("/api/readings?node_id=node-a").get_json()[-1]
+    assert readings["rssi"] == -61
+    assert readings["uptime_seconds"] == 418
+    assert readings["_units"] == {instance["capability_instance_id"]: "C"}
+    with sqlite3.connect(isolated_database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM component_capability_instances").fetchone()[0] == before
+        diagnostic_rows = connection.execute("""SELECT sensor_type, capability_instance_id
+            FROM measurements WHERE sensor_type IN ('rssi', 'uptime_seconds') ORDER BY sensor_type""").fetchall()
+    assert diagnostic_rows == [("rssi", None), ("uptime_seconds", None)]

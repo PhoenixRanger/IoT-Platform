@@ -1,6 +1,7 @@
 let sensorChart = null;
 let selectedNodeId = null;
 let selectedSensor = null;
+let instanceMetadata = {};
 
 const REFRESH_INTERVAL_MS = 5000;
 
@@ -13,6 +14,7 @@ function updateNodeNavigation() {
 }
 
 function formatSensorName(sensorType) {
+    if (instanceMetadata[sensorType]) return instanceMetadata[sensorType].label;
     const labels = {
         outside_temperature: "Outside Temperature",
         outside_humidity: "Outside Humidity",
@@ -31,7 +33,8 @@ function formatSensorName(sensorType) {
         .replace(/\b\w/g, char => char.toUpperCase());
 }
 
-function getSensorUnit(sensorType) {
+function getSensorUnit(sensorType, reading = null) {
+    if (instanceMetadata[sensorType]) return reading?._units?.[sensorType] || "";
     const units = {
         temperature: "°C",
         humidity: "%",
@@ -63,7 +66,7 @@ function getSensorUnit(sensorType) {
 }
 
 function getSensorTypes(readings) {
-    const excludedKeys = ["timestamp", "node_id"];
+    const excludedKeys = ["timestamp", "node_id", "_units"];
     const sensorSet = new Set();
 
     readings.forEach(reading => {
@@ -107,11 +110,13 @@ async function loadReadings() {
     }
 
     try {
-        const [readingsResponse, statusResponse] = await Promise.all([
+        const [readingsResponse, statusResponse, instancesResponse] = await Promise.all([
             fetch(`/api/readings?node_id=${encodeURIComponent(selectedNodeId)}`),
-            fetch(`/api/node-status?node_id=${encodeURIComponent(selectedNodeId)}`)
+            fetch(`/api/node-status?node_id=${encodeURIComponent(selectedNodeId)}`),
+            fetch(`/api/nodes/${encodeURIComponent(selectedNodeId)}/capability-instances`)
         ]);
-        if (!readingsResponse.ok || !statusResponse.ok) throw new Error("Dashboard request failed");
+        if (!readingsResponse.ok || !statusResponse.ok || !instancesResponse.ok) throw new Error("Dashboard request failed");
+        instanceMetadata = Object.fromEntries((await instancesResponse.json()).map(item => [item.instance_id, item]));
         renderDashboard(await readingsResponse.json(), await statusResponse.json());
         document.getElementById("dashboardError").hidden = true;
     } catch (error) {
@@ -204,7 +209,7 @@ function renderCards(readings, sensorTypes, nodeStatus) {
             return;
         }
 
-        const unit = getSensorUnit(sensorType);
+        const unit = getSensorUnit(sensorType, latest);
 
         const card = document.createElement("div");
         card.className = "card";
@@ -247,7 +252,7 @@ function renderChart(readings) {
     chartTitle.textContent = `${selectedNodeId} — ${formatSensorName(selectedSensor)} over time`;
 
     const ctx = document.getElementById("sensorChart");
-    const unit = getSensorUnit(selectedSensor);
+    const unit = getSensorUnit(selectedSensor, selectedReadings[selectedReadings.length - 1]);
 
     if (sensorChart === null) {
         sensorChart = new Chart(ctx, {
@@ -297,7 +302,7 @@ function renderTable(readings, sensorTypes) {
                     return "<td>--</td>";
                 }
 
-                const unit = getSensorUnit(sensorType);
+                const unit = getSensorUnit(sensorType, reading);
                 return `<td>${reading[sensorType].toFixed(1)} ${unit}</td>`;
             }).join("")}
         `;
