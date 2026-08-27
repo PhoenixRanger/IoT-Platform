@@ -22,24 +22,40 @@ def provision(client, node_id="node-a", definition_key="aosong-dht22"):
 
 def test_instance_packet_schema_and_capability_metadata_are_separate():
     node, metadata, reading = parse({
-        "node_id": "node-a", "instance_id": "ci_0123456789", "value": 24.8, "unit": "C"
+        "node_id": "node-a", "instance_id": "ci_0123456789", "cycle_id": "cy_a1b2c3d4e5f60718_1", "value": 24.8, "unit": "C"
     })
     assert node == "node-a"
     assert metadata == {}
-    assert reading == {"instance_id": "ci_0123456789", "value": 24.8, "unit": "C"}
+    assert reading == {"instance_id": "ci_0123456789", "cycle_id": "cy_a1b2c3d4e5f60718_1", "value": 24.8, "unit": "C"}
     node, metadata, reading = parse({"device_id": "node-a", "capabilities": ["wifi", "wifi"]})
     assert metadata == {"capabilities": ["wifi"]}
     assert reading is None
 
 
+@pytest.mark.parametrize("cycle_id", [None, "", " ", 1, "cy_bad_1",
+                                       "cy_A1b2c3d4e5f60718_1",
+                                       "cy_a1b2c3d4e5f60718_",
+                                       "cy_a1b2c3d4e5f60718_12345678901"])
+def test_malformed_cycle_ids_are_rejected(cycle_id):
+    with pytest.raises(ValueError, match="Malformed cycle ID"):
+        parse({"node_id": "node-a", "instance_id": "ci_0123456789",
+               "cycle_id": cycle_id, "value": 1, "unit": "C"})
+
+
+def test_missing_cycle_id_is_rejected_for_instance_telemetry():
+    with pytest.raises(ValueError, match="cycle_id"):
+        parse({"node_id": "node-a", "instance_id": "ci_0123456789",
+               "value": 1, "unit": "C"})
+
+
 @pytest.mark.parametrize("payload", [
     {}, {"node_id": ""}, {"node_id": "   "}, {"node_id": "node"},
     {"node_id": "node", "outside_temperature": 2},
-    {"node_id": "node", "instance_id": "ci_0123456789", "value": 2},
-    {"node_id": "node", "instance_id": "ci_0123456789", "value": "24.8", "unit": "C"},
-    {"node_id": "node", "instance_id": "ci_0123456789", "value": None, "unit": "C"},
-    {"node_id": "node", "instance_id": "ci_0123456789", "value": True, "unit": "C"},
-    {"node_id": "node", "instance_id": "ci_0123456789", "value": float("inf"), "unit": "C"},
+    {"node_id": "node", "instance_id": "ci_0123456789", "cycle_id": "cy_a1b2c3d4e5f60718_1", "value": 2},
+    {"node_id": "node", "instance_id": "ci_0123456789", "cycle_id": "cy_a1b2c3d4e5f60718_1", "value": "24.8", "unit": "C"},
+    {"node_id": "node", "instance_id": "ci_0123456789", "cycle_id": "cy_a1b2c3d4e5f60718_1", "value": None, "unit": "C"},
+    {"node_id": "node", "instance_id": "ci_0123456789", "cycle_id": "cy_a1b2c3d4e5f60718_1", "value": True, "unit": "C"},
+    {"node_id": "node", "instance_id": "ci_0123456789", "cycle_id": "cy_a1b2c3d4e5f60718_1", "value": float("inf"), "unit": "C"},
 ])
 def test_legacy_incomplete_and_invalid_packets_are_rejected(payload):
     with pytest.raises(ValueError):
@@ -49,7 +65,7 @@ def test_legacy_incomplete_and_invalid_packets_are_rejected(payload):
 def test_valid_instance_is_persisted_and_dashboard_metadata_renames(client, isolated_database):
     instances = provision(client)
     temperature = next(item for item in instances if item["capability_key"] == "temperature_measurement")
-    payload = json.dumps({"node_id": "node-a", "instance_id": temperature["capability_instance_id"],
+    payload = json.dumps({"node_id": "node-a", "instance_id": temperature["capability_instance_id"], "cycle_id": "cy_a1b2c3d4e5f60718_1",
                           "value": 22.5, "unit": "C"}).encode()
     on_message(None, None, SimpleNamespace(payload=payload, topic="sensors/node-a/readings"))
     readings = client.get("/api/readings?node_id=node-a").get_json()
@@ -61,7 +77,7 @@ def test_valid_instance_is_persisted_and_dashboard_metadata_renames(client, isol
     # The same Generic Capability may report a different runtime unit; neither
     # persistence nor presentation metadata replaces it with an assumed unit.
     on_message(None, None, SimpleNamespace(payload=json.dumps({
-        "node_id": "node-a", "instance_id": temperature["capability_instance_id"],
+        "node_id": "node-a", "instance_id": temperature["capability_instance_id"], "cycle_id": "cy_a1b2c3d4e5f60718_1",
         "value": 72.5, "unit": "F",
     }).encode(), topic="sensors/node-a/readings"))
     latest = client.get("/api/readings?node_id=node-a").get_json()[-1]
@@ -84,9 +100,9 @@ def test_unknown_malformed_cross_node_and_removed_instances_rejected(client, iso
     a = provision(client, "node-a")[0]
     provision(client, "node-b")
     packets = [
-        {"node_id": "node-a", "instance_id": "ci_bad", "value": 1, "unit": "%"},
-        {"node_id": "node-a", "instance_id": "ci_0000000000", "value": 1, "unit": "%"},
-        {"node_id": "node-b", "instance_id": a["capability_instance_id"], "value": 1, "unit": "%"},
+        {"node_id": "node-a", "instance_id": "ci_bad", "cycle_id": "cy_a1b2c3d4e5f60718_1", "value": 1, "unit": "%"},
+        {"node_id": "node-a", "instance_id": "ci_0000000000", "cycle_id": "cy_a1b2c3d4e5f60718_1", "value": 1, "unit": "%"},
+        {"node_id": "node-b", "instance_id": a["capability_instance_id"], "cycle_id": "cy_a1b2c3d4e5f60718_1", "value": 1, "unit": "%"},
     ]
     for packet in packets:
         on_message(None, None, SimpleNamespace(payload=json.dumps(packet).encode(), topic="test"))
@@ -108,7 +124,7 @@ def test_removed_instance_is_rejected(client, isolated_database, caplog):
         f"/api/nodes/node-a/components/{component['connected_component_id']}"
     ).status_code == 200
     on_message(None, None, SimpleNamespace(payload=json.dumps({
-        "node_id": "node-a", "instance_id": instance_id, "value": 20, "unit": "C",
+        "node_id": "node-a", "instance_id": instance_id, "cycle_id": "cy_a1b2c3d4e5f60718_1", "value": 20, "unit": "C",
     }).encode(), topic="test"))
     with sqlite3.connect(isolated_database) as connection:
         assert connection.execute("""SELECT COUNT(*) FROM measurements
@@ -124,7 +140,7 @@ def test_repeated_capabilities_are_independent_streams(client):
     assert first["capability_instance_id"] != second["capability_instance_id"]
     for instance, value in ((first, 31), (second, 27)):
         on_message(None, None, SimpleNamespace(payload=json.dumps({
-            "node_id": "node-a", "instance_id": instance["capability_instance_id"],
+            "node_id": "node-a", "instance_id": instance["capability_instance_id"], "cycle_id": "cy_a1b2c3d4e5f60718_1",
             "value": value, "unit": "%"}).encode(), topic="test"))
     readings = client.get("/api/readings?node_id=node-a").get_json()
     assert next(row[first["capability_instance_id"]] for row in readings if first["capability_instance_id"] in row) == 31
@@ -149,7 +165,7 @@ def test_device_metadata_and_instance_telemetry_update_only_device_owned_fields(
         "latitude": 51.5, "longitude": -0.1, "enabled": False,
     })
     on_message(None, None, SimpleNamespace(payload=json.dumps({
-        "node_id": "node-a", "instance_id": instance["capability_instance_id"],
+        "node_id": "node-a", "instance_id": instance["capability_instance_id"], "cycle_id": "cy_a1b2c3d4e5f60718_1",
         "value": 44, "unit": "%", "firmware_name": "environment-node",
         "firmware_version": "1.2.3", "hardware_model": "esp32",
         "ota_hostname": "node-a", "node_type": "field-node",
@@ -212,7 +228,7 @@ def test_unknown_reported_capability_preserves_previous_set_and_registry(isolate
 ])
 def test_invalid_node_diagnostics_are_rejected(field, value):
     with pytest.raises(ValueError, match=f"Invalid diagnostic value for {field}"):
-        parse({"node_id": "node-a", "instance_id": "ci_0123456789",
+        parse({"node_id": "node-a", "instance_id": "ci_0123456789", "cycle_id": "cy_a1b2c3d4e5f60718_1",
                "value": 1, "unit": "C", field: value})
 
 
@@ -221,7 +237,7 @@ def test_diagnostics_remain_node_measurements_and_do_not_create_instances(client
     with sqlite3.connect(isolated_database) as connection:
         before = connection.execute("SELECT COUNT(*) FROM component_capability_instances").fetchone()[0]
     on_message(None, None, SimpleNamespace(payload=json.dumps({
-        "node_id": "node-a", "instance_id": instance["capability_instance_id"],
+        "node_id": "node-a", "instance_id": instance["capability_instance_id"], "cycle_id": "cy_a1b2c3d4e5f60718_1",
         "value": 21, "unit": "C", "rssi": -61, "uptime_seconds": 418,
     }).encode(), topic="test"))
     readings = client.get("/api/readings?node_id=node-a").get_json()[-1]
@@ -230,6 +246,10 @@ def test_diagnostics_remain_node_measurements_and_do_not_create_instances(client
     assert readings["_units"] == {instance["capability_instance_id"]: "C"}
     with sqlite3.connect(isolated_database) as connection:
         assert connection.execute("SELECT COUNT(*) FROM component_capability_instances").fetchone()[0] == before
-        diagnostic_rows = connection.execute("""SELECT sensor_type, capability_instance_id
+        diagnostic_rows = connection.execute("""SELECT sensor_type, capability_instance_id,
+            measurement_cycle_id
             FROM measurements WHERE sensor_type IN ('rssi', 'uptime_seconds') ORDER BY sensor_type""").fetchall()
-    assert diagnostic_rows == [("rssi", None), ("uptime_seconds", None)]
+    assert diagnostic_rows == [
+        ("rssi", None, "cy_a1b2c3d4e5f60718_1"),
+        ("uptime_seconds", None, "cy_a1b2c3d4e5f60718_1"),
+    ]

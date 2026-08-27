@@ -102,11 +102,11 @@ def receive_data():
     # nested readings form remains bounded to this debug endpoint so deployed
     # tools can migrate; MQTT has one instance-only runtime architecture.
     if {"instance_id", "value", "unit"} <= set(data):
-        if set(data) != {"node_id", "instance_id", "value", "unit"}:
+        if set(data) != {"node_id", "instance_id", "cycle_id", "value", "unit"}:
             return jsonify({"error": "Unsupported telemetry fields"}), 400
         try:
             saved = [save_instance_measurement(
-                node_id, data["instance_id"], data["value"], data["unit"]
+                node_id, data["instance_id"], data["cycle_id"], data["value"], data["unit"]
             )]
         except ValueError as error:
             return jsonify({"error": str(error)}), 400

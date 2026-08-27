@@ -383,6 +383,90 @@ def test_recent_readings_query_index_is_present_and_used(isolated_database):
     assert any("idx_measurements_node_timestamp_id" in row[3] for row in plan)
 
 
+def test_cycle_migration_is_additive_idempotent_and_leaves_history_null(isolated_database):
+    from app import database
+
+    save_measurements("legacy", {"temperature": 20})
+    database.init_db()
+    database.init_db()
+    with sqlite3.connect(isolated_database) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(measurements)")}
+        indexes = {row[1] for row in connection.execute("PRAGMA index_list(measurements)")}
+        stored = connection.execute("""SELECT measurement_cycle_id
+            FROM measurements WHERE node_id = 'legacy'""").fetchone()[0]
+    assert "measurement_cycle_id" in columns
+    assert "idx_measurements_node_cycle_timestamp_id" in indexes
+    assert stored is None
+
+
+def test_recent_readings_groups_explicit_cycles_and_keeps_legacy_separate(isolated_database):
+    from app.database import get_recent_measurements
+
+    save_measurements("mixed", {"temperature": 10})
+    with sqlite3.connect(isolated_database) as connection:
+        node_db_id = connection.execute(
+            "SELECT id FROM nodes WHERE node_id = 'mixed'"
+        ).fetchone()[0]
+        rows = [
+            ("humidity_measurement", "ci_0000000001", 51, "%", "2026-01-01 00:00:01",
+             "cy_a1b2c3d4e5f60718_7"),
+            ("temperature_measurement", "ci_0000000002", 21, "C", "2026-01-01 00:00:03",
+             "cy_a1b2c3d4e5f60718_7"),
+            # A different cycle at the same ingestion second must remain separate.
+            ("pressure_measurement", "ci_0000000003", 1001, "hPa", "2026-01-01 00:00:03",
+             "cy_1111111111111111_7"),
+            # The same sequence under a third boot ID is another cycle, even
+            # with one missing sensor (no placeholder is synthesized).
+            ("humidity_measurement", "ci_0000000001", 55, "%", "2026-01-01 00:00:05",
+             "cy_2222222222222222_7"),
+        ]
+        connection.executemany("""INSERT INTO measurements
+            (node_db_id, node_id, sensor_type, capability_instance_id, value, unit,
+             timestamp, measurement_cycle_id) VALUES (?, 'mixed', ?, ?, ?, ?, ?, ?)""",
+                               [(node_db_id, *row) for row in rows])
+
+    readings = get_recent_measurements("mixed")
+    cycle = next(row for row in readings if row.get("ci_0000000002") == 21)
+    assert cycle["timestamp"] == "2026-01-01 00:00:01"
+    assert cycle["ci_0000000001"] == 51
+    assert len(readings) == 4  # one legacy timestamp plus three explicit cycles
+    assert sum("ci_0000000003" in row for row in readings) == 1
+    partial = next(row for row in readings if row.get("ci_0000000001") == 55)
+    assert "ci_0000000002" not in partial
+
+
+def test_reading_limit_counts_mixed_logical_cycles(isolated_database):
+    from app.database import get_recent_measurements
+
+    save_measurements("limited", {"temperature": -1})
+    with sqlite3.connect(isolated_database) as connection:
+        node_db_id = connection.execute(
+            "SELECT id FROM nodes WHERE node_id = 'limited'"
+        ).fetchone()[0]
+        for sequence in range(READING_LIMIT + 5):
+            cycle_id = f"cy_a1b2c3d4e5f60718_{sequence + 1}"
+            for sensor, value in (("temperature_measurement", sequence),
+                                  ("humidity_measurement", sequence + 100)):
+                connection.execute("""INSERT INTO measurements
+                    (node_db_id, node_id, sensor_type, value, unit, timestamp,
+                     measurement_cycle_id) VALUES (?, 'limited', ?, ?, '', ?, ?)""",
+                    (node_db_id, sensor, value, f"2026-01-01 00:{sequence:02d}:00", cycle_id))
+    readings = get_recent_measurements("limited")
+    assert len(readings) == READING_LIMIT
+    assert readings[0]["temperature_measurement"] == 6
+    assert readings[-2]["temperature_measurement"] == READING_LIMIT + 4
+    assert readings[-1]["temperature"] == -1
+
+
+def test_cycle_lookup_query_uses_partial_index(isolated_database):
+    with sqlite3.connect(isolated_database) as connection:
+        plan = connection.execute("""EXPLAIN QUERY PLAN
+            SELECT timestamp, sensor_type FROM measurements
+            WHERE node_id = ? AND measurement_cycle_id IN (?, ?)""",
+            ("node", "cy_a1b2c3d4e5f60718_1", "cy_a1b2c3d4e5f60718_2")).fetchall()
+    assert any("idx_measurements_node_cycle_timestamp_id" in row[3] for row in plan)
+
+
 def test_frontend_registry_and_selector_contract(client):
     script = client.get("/static/script.js").get_data(as_text=True)
     details_script = client.get("/static/node_details.js").get_data(as_text=True)

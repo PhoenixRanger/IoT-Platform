@@ -4,9 +4,9 @@ A Raspberry Pi + ESP32 environmental monitoring dashboard and early-stage agricu
 
 ## Current Version
 
-**v1.16.0 — Capability Instance Runtime Identity & Telemetry Integration**
+**v1.16.1 — Explicit Telemetry Reporting Cycles**
 
-This release makes stable `ci_…` Capability Instance IDs the canonical identity of new runtime telemetry. Instance labels are editable presentation metadata used by the dashboard without changing the underlying telemetry series.
+This patch release adds an explicit `cycle_id` to canonical Instance-aware telemetry so independently delivered packets from one physical reporting cycle remain one dashboard row, even across server timestamp boundaries.
 
 ## Features
 
@@ -48,10 +48,10 @@ Firmware has independent semantic versions, unrelated to the platform release. F
 Nodes publish one Capability Instance-aware reading per packet to `sensors/<node_id>/readings`. The server rejects unknown, inactive, malformed, or cross-node Instance IDs and never creates inventory from telemetry. Firmware continues to report its complete type-level capability set on MQTT connection/reconnection. Historical legacy measurement rows remain readable, but legacy sensor-name packets are no longer a runtime ingestion protocol.
 
 ```json
-{"node_id":"irrigation_controller_001","instance_id":"ci_4004cf91b3","value":24.8,"unit":"C"}
+{"node_id":"irrigation_controller_001","instance_id":"ci_4004cf91b3","cycle_id":"cy_a1b2c3d4e5f60718_184","value":24.8,"unit":"C"}
 ```
 
-On startup, `init_db()` safely adds nullable Instance identity to measurements and labels to the small Capability Instance inventory. Existing measurements and identities are retained; no history backfill occurs. A partial `(capability_instance_id, timestamp DESC, id DESC)` index supports Instance-series queries while the existing node/timestamp index continues to bound dashboard refreshes.
+On startup, `init_db()` safely adds nullable Instance and cycle identity to measurements. Existing measurements and identities are retained; no history backfill occurs. New rows group by explicit cycle identity, while historical rows retain timestamp grouping. Partial Instance-series and node/cycle indexes support bounded dashboard access without indexing legacy NULL cycle values.
 
 HTTP fallback remains:
 
@@ -154,5 +154,6 @@ The public repository is intended to begin with the mature v1.10.1 working tree 
 - **v1.14.0** — groups, tags, fleet filters, bulk organization, and Details/Technical separation.
 - **v1.15.0** — reusable component definitions, node physical inventory, lifecycle removal, and component-derived Expected capabilities.
 - **v1.16.0** — immutable Capability Instance runtime telemetry identity, editable labels, and dashboard integration.
+- **v1.16.1** — explicit per-boot reporting-cycle identity fixes split dashboard rows.
 
 Future work continues toward MQTT security, LoRaWAN, actuator and node management, and a dedicated Linux property server. See the architecture and operations documents for the current design and workflows.

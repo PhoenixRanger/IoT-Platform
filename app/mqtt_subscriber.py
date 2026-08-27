@@ -7,6 +7,7 @@ import paho.mqtt.client as mqtt
 
 from app.config import MQTT_HOST, MQTT_PORT, MQTT_TOPIC
 from app.database import (
+    CYCLE_ID_PATTERN,
     init_db,
     replace_reported_capabilities,
     save_measurements,
@@ -63,13 +64,15 @@ def parse_reading_payload(payload):
         metadata["capabilities"] = list(dict.fromkeys(key.strip() for key in capabilities))
 
     readings = None
-    telemetry_fields = {"instance_id", "value", "unit"}
+    telemetry_fields = {"instance_id", "cycle_id", "value", "unit"}
     if telemetry_fields & set(data):
         if not telemetry_fields <= set(data):
-            raise ValueError("Telemetry requires instance_id, value, and unit")
+            raise ValueError("Telemetry requires instance_id, cycle_id, value, and unit")
         if isinstance(data["value"], bool) or not isinstance(data["value"], Real) \
                 or not math.isfinite(data["value"]):
             raise ValueError("Telemetry value must be a finite number")
+        if not isinstance(data["cycle_id"], str) or not CYCLE_ID_PATTERN.fullmatch(data["cycle_id"]):
+            raise ValueError("Malformed cycle ID")
         readings = {field: data[field] for field in telemetry_fields}
         diagnostics = {}
         for field in ("rssi", "uptime_seconds"):
@@ -147,7 +150,9 @@ def on_message(client, userdata, message):
             saved = [save_instance_measurement(device_id, **readings)]
             # RSSI and uptime describe the node transport/runtime rather than a
             # sensing or actuation channel, so they remain node diagnostics.
-            saved.extend(save_measurements(device_id, diagnostics))
+            saved.extend(save_measurements(
+                device_id, diagnostics, measurement_cycle_id=readings["cycle_id"]
+            ))
         else:
             saved = []
     except ValueError as error:

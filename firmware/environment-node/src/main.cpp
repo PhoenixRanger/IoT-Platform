@@ -6,6 +6,7 @@
 #include "diagnostics/NodeIdentity.h"
 #include "mqtt/MetadataPayload.h"
 #include "ota/OtaService.h"
+#include "telemetry/CycleIdentity.h"
 #include "wifi/WifiConnection.h"
 
 #define DHT_PIN 4
@@ -23,10 +24,13 @@ WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
 DHT dht(DHT_PIN, DHT_TYPE);
 unsigned long lastPublish = 0;
+CycleIdentity cycleIdentity;
 
-void publishReading(const char* instanceId, float value, const char* unit, bool includeDiagnostics = false) {
+void publishReading(const char* instanceId, const String& cycleId, float value,
+                    const char* unit, bool includeDiagnostics = false) {
   String json = "{\"node_id\":\"" + String(IDENTITY.nodeId) + "\"";
   json += ",\"instance_id\":\"" + String(instanceId) + "\"";
+  json += ",\"cycle_id\":\"" + cycleId + "\"";
   json += ",\"value\":" + String(value, 1) + ",\"unit\":\"" + String(unit) + "\"}";
   if (includeDiagnostics) {
     json.remove(json.length() - 1);
@@ -49,6 +53,7 @@ bool connectMqtt() {
 
 void setup() {
   Serial.begin(115200);
+  cycleIdentity.begin();
   dht.begin();
   mqttClient.setServer(MQTT_SERVER, 1883);
   mqttClient.setBufferSize(512);
@@ -65,9 +70,13 @@ void loop() {
   mqttClient.loop();
   if (millis() - lastPublish < PUBLISH_INTERVAL_MS) { delay(10); return; }
   lastPublish = millis();
+  const String cycleId = cycleIdentity.next();
   float temperature = dht.readTemperature();
   float humidity = dht.readHumidity();
-  if (isnan(temperature) || isnan(humidity)) return;
-  publishReading(TEMPERATURE_INSTANCE_ID, temperature, "C", true);
-  publishReading(HUMIDITY_INSTANCE_ID, humidity, "%");
+  if (!isnan(temperature)) {
+    publishReading(TEMPERATURE_INSTANCE_ID, cycleId, temperature, "C", true);
+  }
+  if (!isnan(humidity)) {
+    publishReading(HUMIDITY_INSTANCE_ID, cycleId, humidity, "%");
+  }
 }

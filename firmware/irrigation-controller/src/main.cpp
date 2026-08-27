@@ -8,6 +8,7 @@
 #include "diagnostics/NodeIdentity.h"
 #include "mqtt/MetadataPayload.h"
 #include "ota/OtaService.h"
+#include "telemetry/CycleIdentity.h"
 #include "wifi/WifiConnection.h"
 
 #define DHT_PIN 47
@@ -32,11 +33,14 @@ Adafruit_MS8607 ms8607;
 bool ms8607Available = false;
 unsigned long lastPublish = 0;
 unsigned long lastMs8607RecoveryAttempt = 0;
+CycleIdentity cycleIdentity;
 
-void publishReading(const char* instanceId, float value, const char* unit, bool includeDiagnostics = false) {
+void publishReading(const char* instanceId, const String& cycleId, float value,
+                    const char* unit, bool includeDiagnostics = false) {
   if (isnan(value) || isinf(value)) return;
   String json = "{\"node_id\":\"" + String(IDENTITY.nodeId) + "\"";
   json += ",\"instance_id\":\"" + String(instanceId) + "\"";
+  json += ",\"cycle_id\":\"" + cycleId + "\"";
   json += ",\"value\":" + String(value, 1) + ",\"unit\":\"" + String(unit) + "\"}";
   if (includeDiagnostics) {
     json.remove(json.length() - 1);
@@ -75,6 +79,7 @@ void recoverMs8607IfNeeded() {
 
 void setup() {
   Serial.begin(115200);
+  cycleIdentity.begin();
   dht.begin();
   Wire.begin(MS8607_SDA_PIN, MS8607_SCL_PIN);
   ms8607Available = ms8607.begin(&Wire);
@@ -101,14 +106,15 @@ void loop() {
   mqttClient.loop();
   if (millis() - lastPublish < PUBLISH_INTERVAL_MS) { delay(10); return; }
   lastPublish = millis();
-  publishReading(ENCLOSURE_TEMPERATURE_INSTANCE_ID, dht.readTemperature(), "C", true);
-  publishReading(ENCLOSURE_HUMIDITY_INSTANCE_ID, dht.readHumidity(), "%");
+  const String cycleId = cycleIdentity.next();
+  publishReading(ENCLOSURE_TEMPERATURE_INSTANCE_ID, cycleId, dht.readTemperature(), "C", true);
+  publishReading(ENCLOSURE_HUMIDITY_INSTANCE_ID, cycleId, dht.readHumidity(), "%");
   if (ms8607Available) {
     sensors_event_t pressure, temperature, humidity;
     if (ms8607.getEvent(&pressure, &temperature, &humidity)) {
-      publishReading(OUTSIDE_TEMPERATURE_INSTANCE_ID, temperature.temperature, "C");
-      publishReading(OUTSIDE_HUMIDITY_INSTANCE_ID, humidity.relative_humidity, "%");
-      publishReading(OUTSIDE_PRESSURE_INSTANCE_ID, pressure.pressure, "hPa");
+      publishReading(OUTSIDE_TEMPERATURE_INSTANCE_ID, cycleId, temperature.temperature, "C");
+      publishReading(OUTSIDE_HUMIDITY_INSTANCE_ID, cycleId, humidity.relative_humidity, "%");
+      publishReading(OUTSIDE_PRESSURE_INSTANCE_ID, cycleId, pressure.pressure, "hPa");
     }
   }
 }

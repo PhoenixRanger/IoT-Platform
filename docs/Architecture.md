@@ -14,11 +14,11 @@ normalized SQLite nodes, sensors, measurements, capabilities
 Flask APIs → dashboard and node-details page
 ```
 
-MQTT keeps its flat, backward-compatible payload. The subscriber separates device-owned metadata from numeric readings. Devices may update legacy `node_type`, hardware, firmware, and OTA hostname fields, while registry name, location, category, GPS, and enabled state remain server-owned. RSSI and uptime remain historical measurements. Online/offline is derived from the latest measurement rather than stored; disabled is an administrative override and does not block ingestion.
+Canonical MQTT sensing packets identify a node, Capability Instance, explicit reporting cycle, numeric value, and unit. The subscriber separates device-owned metadata from numeric readings. Devices may update legacy `node_type`, hardware, firmware, and OTA hostname fields, while registry name, location, category, GPS, and enabled state remain server-owned. RSSI and uptime remain node-level measurements and inherit the cycle of the packet that persisted them. Online/offline is derived from the latest measurement rather than stored; disabled is an administrative override and does not block ingestion.
 
 `init_db()` performs an idempotent in-place migration, adding nullable hardware model/revision, firmware name/version, OTA hostname, category, latitude, longitude, and an enabled flag that defaults true. Existing databases and automatically registered nodes remain valid.
 
-Recent readings use `idx_measurements_node_timestamp_id` on `(node_id, timestamp DESC, id DESC)`. The first query walks this covering index only until it has found `READING_LIMIT` distinct recent timestamps in application code. A second indexed `IN` lookup retrieves every measurement at those timestamps in chronological order. Work is therefore driven by one node's requested recent cycles and their dynamic sensor rows, rather than a full-history grouping scan or a fixed sensor-count multiplier.
+Recent readings walk `idx_measurements_node_timestamp_id` on `(node_id, timestamp DESC, id DESC)` only until `READING_LIMIT` distinct logical keys are found in application code. Cycle-aware rows use `("cycle", measurement_cycle_id)` and historical rows use `("legacy", timestamp)`. Indexed lookups then fetch all rows for the selected explicit cycles and legacy timestamps. The partial `idx_measurements_node_cycle_timestamp_id` supports explicit-cycle retrieval without indexing historical NULL values. Cycle rows display their earliest server timestamp; the API remains oldest-first and does not expose its internal grouping key.
 
 ## Firmware
 

@@ -145,6 +145,7 @@ def init_db():
             unit TEXT NOT NULL,
             timestamp TEXT NOT NULL,
             capability_instance_id TEXT,
+            measurement_cycle_id TEXT,
             FOREIGN KEY (node_db_id) REFERENCES nodes(id),
             FOREIGN KEY (capability_instance_id)
                 REFERENCES component_capability_instances(capability_instance_id)
@@ -153,10 +154,11 @@ def init_db():
     measurement_columns = {row[1] for row in cur.execute("PRAGMA table_info(measurements)")}
     if "capability_instance_id" not in measurement_columns:
         cur.execute("ALTER TABLE measurements ADD COLUMN capability_instance_id TEXT")
+    if "measurement_cycle_id" not in measurement_columns:
+        cur.execute("ALTER TABLE measurements ADD COLUMN measurement_cycle_id TEXT")
 
-    # Supports bounded recent-cycle lookups for one node. The dashboard first
-    # walks this covering index only until it finds READING_LIMIT timestamps,
-    # then uses the same index to retrieve every row in those cycles.
+    # Supports the bounded newest-row walk for one node. Application code stops
+    # after READING_LIMIT explicit-cycle or legacy-timestamp grouping keys.
     cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_measurements_node_timestamp_id
         ON measurements (node_id, timestamp DESC, id DESC)
@@ -412,6 +414,13 @@ def init_db():
     cur.execute("""CREATE INDEX IF NOT EXISTS idx_measurements_instance_timestamp_id
                    ON measurements (capability_instance_id, timestamp DESC, id DESC)
                    WHERE capability_instance_id IS NOT NULL""")
+    # Fetching all rows for the bounded set of recent explicit cycles is the
+    # recurring cycle-aware access path. The partial index avoids indexing
+    # millions of historical rows whose cycle identity is NULL.
+    cur.execute("""CREATE INDEX IF NOT EXISTS idx_measurements_node_cycle_timestamp_id
+                   ON measurements
+                       (node_id, measurement_cycle_id, timestamp, id)
+                   WHERE measurement_cycle_id IS NOT NULL""")
     _seed_component_definitions(cur)
     _reconcile_capability_instances(cur, include_removed_missing=True)
 
@@ -1531,7 +1540,12 @@ def get_node_capabilities(node_id):
     }
 
 
-def save_measurements(node_id, readings):
+def save_measurements(node_id, readings, measurement_cycle_id=None):
+    if measurement_cycle_id is not None and (
+        not isinstance(measurement_cycle_id, str)
+        or not CYCLE_ID_PATTERN.fullmatch(measurement_cycle_id)
+    ):
+        raise ValueError("Malformed cycle ID")
     timestamp = now_string()
     saved = []
 
@@ -1565,10 +1579,11 @@ def save_measurements(node_id, readings):
         cur.execute(
             """
             INSERT INTO measurements
-            (node_db_id, node_id, sensor_type, value, unit, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (node_db_id, node_id, sensor_type, value, unit, timestamp, measurement_cycle_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (node_db_id, node_id, sensor_type, numeric_value, unit, timestamp)
+            (node_db_id, node_id, sensor_type, numeric_value, unit, timestamp,
+             measurement_cycle_id)
         )
 
         saved.append({
@@ -1586,12 +1601,15 @@ def save_measurements(node_id, readings):
 
 
 CAPABILITY_INSTANCE_ID_PATTERN = re.compile(r"^ci_[0-9a-f]{10}$")
+CYCLE_ID_PATTERN = re.compile(r"^cy_[0-9a-f]{16}_[0-9]{1,10}$")
 
 
-def save_instance_measurement(node_id, instance_id, value, unit):
+def save_instance_measurement(node_id, instance_id, cycle_id, value, unit):
     """Persist one canonical runtime channel after strict inventory ownership checks."""
     if not isinstance(instance_id, str) or not CAPABILITY_INSTANCE_ID_PATTERN.fullmatch(instance_id):
         raise ValueError("Malformed capability instance ID")
+    if not isinstance(cycle_id, str) or not CYCLE_ID_PATTERN.fullmatch(cycle_id):
+        raise ValueError("Malformed cycle ID")
     if isinstance(value, bool):
         raise ValueError("value must be a finite number")
     try:
@@ -1622,12 +1640,14 @@ def save_instance_measurement(node_id, instance_id, value, unit):
             raise ValueError("Capability instance does not belong to supplied node")
         timestamp = now_string()
         conn.execute("""INSERT INTO measurements
-            (node_db_id, node_id, sensor_type, value, unit, timestamp, capability_instance_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (row[0], node_id, row[1], numeric_value, unit.strip(), timestamp, instance_id))
+            (node_db_id, node_id, sensor_type, value, unit, timestamp,
+             capability_instance_id, measurement_cycle_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (row[0], node_id, row[1], numeric_value, unit.strip(), timestamp,
+             instance_id, cycle_id))
         conn.commit()
-        return {"node_id": node_id, "instance_id": instance_id, "value": numeric_value,
-                "unit": unit.strip(), "timestamp": timestamp}
+        return {"node_id": node_id, "instance_id": instance_id, "cycle_id": cycle_id,
+                "value": numeric_value, "unit": unit.strip(), "timestamp": timestamp}
     except Exception:
         conn.rollback()
         raise
@@ -1721,57 +1741,72 @@ def get_recent_measurements(node_id=None):
     conn = get_connection()
     cur = conn.cursor()
 
-    # Walk the newest rows for this node through the covering index and stop as
-    # soon as the requested number of distinct reporting timestamps is found.
-    # This avoids both a full-history GROUP BY and any fixed sensors-per-cycle
-    # assumption.
-    timestamp_rows = cur.execute(
+    # Walk newest rows through the node/time index until READING_LIMIT logical
+    # groups are found. Explicit cycles and legacy timestamps use disjoint keys.
+    recent_rows = cur.execute(
         """
-        SELECT timestamp
+        SELECT timestamp, measurement_cycle_id
         FROM measurements
         WHERE node_id = ?
         ORDER BY timestamp DESC, id DESC
         """,
         (node_id,),
     )
-    timestamps = []
-    previous_timestamp = None
-    for (timestamp,) in timestamp_rows:
-        if timestamp == previous_timestamp:
+    group_keys = []
+    seen = set()
+    for timestamp, cycle_id in recent_rows:
+        key = ("cycle", cycle_id) if cycle_id is not None else ("legacy", timestamp)
+        if key in seen:
             continue
-        timestamps.append(timestamp)
-        previous_timestamp = timestamp
-        if len(timestamps) == READING_LIMIT:
+        seen.add(key)
+        group_keys.append(key)
+        if len(group_keys) == READING_LIMIT:
             break
 
-    if not timestamps:
+    if not group_keys:
         conn.close()
         return []
 
-    placeholders = ", ".join("?" for _ in timestamps)
-    rows = cur.execute(
-        f"""
-        SELECT timestamp, sensor_type, capability_instance_id, value, unit
-        FROM measurements
-        WHERE node_id = ? AND timestamp IN ({placeholders})
-        ORDER BY timestamp ASC, id ASC
-        """,
-        (node_id, *timestamps),
-    ).fetchall()
+    cycle_ids = [value for kind, value in group_keys if kind == "cycle"]
+    legacy_timestamps = [value for kind, value in group_keys if kind == "legacy"]
+    rows = []
+    if cycle_ids:
+        placeholders = ", ".join("?" for _ in cycle_ids)
+        rows.extend(cur.execute(f"""SELECT timestamp, sensor_type,
+            capability_instance_id, value, unit, measurement_cycle_id, id
+            FROM measurements WHERE node_id = ?
+              AND measurement_cycle_id IN ({placeholders})""",
+                                (node_id, *cycle_ids)).fetchall())
+    if legacy_timestamps:
+        placeholders = ", ".join("?" for _ in legacy_timestamps)
+        rows.extend(cur.execute(f"""SELECT timestamp, sensor_type,
+            capability_instance_id, value, unit, measurement_cycle_id, id
+            FROM measurements WHERE node_id = ? AND measurement_cycle_id IS NULL
+              AND timestamp IN ({placeholders})""",
+                                (node_id, *legacy_timestamps)).fetchall())
     conn.close()
 
     grouped = {}
 
-    for timestamp, sensor_type, capability_instance_id, value, unit in rows:
-        if timestamp not in grouped:
-            grouped[timestamp] = {
+    for timestamp, sensor_type, capability_instance_id, value, unit, cycle_id, row_id in rows:
+        key = ("cycle", cycle_id) if cycle_id is not None else ("legacy", timestamp)
+        if key not in grouped:
+            grouped[key] = {
                 "timestamp": timestamp,
-                "node_id": node_id
+                "node_id": node_id,
+                "_row_id": row_id,
             }
+        elif timestamp < grouped[key]["timestamp"]:
+            grouped[key]["timestamp"] = timestamp
 
         series_id = capability_instance_id or sensor_type
-        grouped[timestamp][series_id] = value
+        grouped[key][series_id] = value
         if capability_instance_id is not None:
-            grouped[timestamp].setdefault("_units", {})[series_id] = unit
+            grouped[key].setdefault("_units", {})[series_id] = unit
 
-    return list(grouped.values())
+    # group_keys is newest-first from the bounded index walk; the established
+    # API presents the selected logical rows oldest-first.
+    result = [grouped[key] for key in reversed(group_keys)]
+    for row in result:
+        row.pop("_row_id")
+    return result
