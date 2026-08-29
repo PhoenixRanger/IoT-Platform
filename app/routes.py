@@ -34,6 +34,10 @@ from app.database import (
     update_connected_component,
     update_capability_instance_label,
 )
+from app.hardware_platforms import (
+    assign_hardware_platform, create_hardware_platform, delete_hardware_platform,
+    get_hardware_platform, list_hardware_platforms, update_hardware_platform,
+)
 
 
 routes = Blueprint("routes", __name__)
@@ -57,6 +61,11 @@ def fleet_organization_page():
 @routes.route("/components")
 def component_library_page():
     return render_template("components.html")
+
+
+@routes.route("/hardware-platforms")
+def hardware_platform_library_page():
+    return render_template("hardware_platforms.html")
 
 
 @routes.route("/nodes/<node_id>")
@@ -184,6 +193,46 @@ def component_definitions():
         return jsonify(create_component_definition(request.get_json(silent=True))), 201
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
+
+
+@routes.route("/api/hardware-platforms", methods=["GET", "POST"])
+def hardware_platform_definitions():
+    if request.method == "GET":
+        return jsonify(list_hardware_platforms())
+    try:
+        return jsonify(create_hardware_platform(request.get_json(silent=True))), 201
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@routes.route("/api/hardware-platforms/<hardware_platform_id>", methods=["GET", "PATCH", "DELETE"])
+def hardware_platform_definition(hardware_platform_id):
+    definition = get_hardware_platform(hardware_platform_id)
+    if definition is None:
+        return jsonify({"error": "Hardware Platform not found"}), 404
+    if request.method == "GET":
+        return jsonify(definition)
+    if request.method == "DELETE":
+        if not delete_hardware_platform(hardware_platform_id):
+            return jsonify({"error": "A used Hardware Platform cannot be deleted"}), 409
+        return jsonify({"status": "deleted"})
+    try:
+        return jsonify(update_hardware_platform(hardware_platform_id, request.get_json(silent=True)))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@routes.route("/api/nodes/<node_id>/hardware-platform", methods=["PUT"])
+def node_hardware_platform(node_id):
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or set(payload) != {"hardware_platform_id"}:
+        return jsonify({"error": "Request must contain only hardware_platform_id"}), 400
+    try:
+        return jsonify(assign_hardware_platform(node_id, payload["hardware_platform_id"]))
+    except LookupError as error:
+        return jsonify({"error": str(error)}), 404
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 409
 
 
 @routes.route("/api/components/<definition_key>", methods=["GET", "PATCH", "DELETE"])

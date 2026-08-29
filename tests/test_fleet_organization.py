@@ -88,7 +88,8 @@ def test_overview_expected_capabilities_and_ui_filter_selection_contract(client)
     assert get_nodes_overview()[0]["expected_capabilities"] == []
     page = client.get("/nodes").get_data(as_text=True)
     script = client.get("/static/nodes.js").get_data(as_text=True)
-    for family in ("Group", "Tag", "Capability", "Runtime Status", "Overall Health"):
+    for family in ("Group", "Tag", "Capability", "Hardware Platform", "Component",
+                   "Runtime Status", "Overall Health"):
         assert family in script
     assert 'const runtimeStatusOptions = ["online", "offline", "unknown", "disabled"]' in script
     assert 'const overallHealthOptions = ["healthy", "capability_mismatch", "offline", "unknown", "disabled"]' in script
@@ -98,6 +99,16 @@ def test_overview_expected_capabilities_and_ui_filter_selection_contract(client)
     assert "renderFilterFamilyValues(panel, activeFilterFamily)" in script
     assert 'search.type = "search"' in script
     assert 'optionList.querySelectorAll("label")' in script
+    assert 'hardware_platform: new Set()' in script
+    assert 'component: new Set()' in script
+    assert 'item.hardware_platform_id, item.display_name' in script
+    assert 'item.definition_key, item.display_name' in script
+    assert 'node.components.map(item => item.definition_key)' in script
+    assert 'params.getAll(family)' in script
+    assert 'if (valid.has(value)) filters[family].add(value)' in script
+    assert 'window.addEventListener("popstate"' in script
+    assert 'fetch("/api/hardware-platforms")' in script
+    assert 'fetch("/api/components")' in script
     assert "Object.entries(filterOptions()).map" not in script
     assert "Category" not in page
     assert "const selectedNodeIds = new Set()" in script
@@ -119,6 +130,52 @@ def test_fleet_organization_and_node_views(client):
     assert 'id="organization"' in details
     assert "Runtime Status" not in details
     assert "Runtime Status" in technical and "Capabilities" in technical
+
+
+def test_top_level_pages_share_canonical_primary_navigation(client):
+    destinations = [
+        ('/', 'Dashboard'), ('/nodes', 'All Nodes'),
+        ('/fleet/organization', 'Manage Groups &amp; Tags'),
+        ('/components', 'Component Library'),
+        ('/hardware-platforms', 'Hardware Platform Library'),
+    ]
+    active_sections = {
+        '/': 'dashboard', '/nodes': 'nodes', '/fleet/organization': 'organization',
+        '/components': 'components', '/hardware-platforms': 'hardware_platforms',
+    }
+    partial = open('templates/_primary_nav.html', encoding='utf-8').read()
+    for route, _ in destinations:
+        page = client.get(route).get_data(as_text=True)
+        assert 'class="primary-nav"' in page
+        positions = [page.index(f'href="{href}"') for href, _ in destinations]
+        assert positions == sorted(positions)
+        assert all(label in page for _, label in destinations)
+        active_href = dict((key, href) for key, href, _ in [
+            ('dashboard', '/', 'Dashboard'), ('nodes', '/nodes', 'All Nodes'),
+            ('organization', '/fleet/organization', 'Manage Groups & Tags'),
+            ('components', '/components', 'Component Library'),
+            ('hardware_platforms', '/hardware-platforms', 'Hardware Platform Library'),
+        ])[active_sections[route]]
+        active_link_start = page.rfind('<a ', 0, page.index(f'href="{active_href}"') + 1)
+        active_link_end = page.index('</a>', active_link_start)
+        active_link = page[active_link_start:active_link_end]
+        assert 'button-primary' in active_link and 'aria-current="page"' in active_link
+    assert "include '_primary_nav.html'" in open('templates/index.html', encoding='utf-8').read()
+    assert 'primary-nav' in partial
+    for route in ('/nodes/missing', '/nodes/missing/technical'):
+        assert 'class="primary-nav"' not in client.get(route).get_data(as_text=True)
+
+
+def test_usage_pill_and_row_menu_overlay_contract(client):
+    styles = client.get('/static/style.css').get_data(as_text=True)
+    assert '.usage-count-link {' in styles
+    assert '.usage-count-link:hover' in styles
+    assert '.usage-count-link:focus-visible' in styles
+    assert '.component-table-wrapper { overflow:visible; }' in styles
+    assert '.component-table tr.menu-open { position:relative; z-index:' in styles
+    platform_page = client.get('/hardware-platforms').get_data(as_text=True)
+    assert 'class="responsive-table component-table-wrapper"' in platform_page
+    assert '<span class="visually-hidden">Actions</span>' in platform_page
 
 
 def test_node_views_share_node_specific_navigation(client):

@@ -43,6 +43,12 @@ function render() {
             cell.textContent = value;
             tr.append(cell);
         });
+        const usage = document.createElement("td"), usageLink = document.createElement("a");
+        usageLink.className = "usage-count-link";
+        usageLink.href = `/nodes?component=${encodeURIComponent(item.definition_key)}`;
+        usageLink.textContent = String(item.active_node_count);
+        usage.append(usageLink);
+        tr.append(usage);
 
         const actions = document.createElement("td"), wrap = document.createElement("div");
         const trigger = document.createElement("button"), menu = document.createElement("div");
@@ -80,7 +86,7 @@ function render() {
         body.append(tr);
     });
     if (!definitions.length) {
-        body.innerHTML = '<tr><td colspan="6" class="fleet-empty">No component definitions.</td></tr>';
+        body.innerHTML = '<tr><td colspan="7" class="fleet-empty">No component definitions.</td></tr>';
     }
 }
 

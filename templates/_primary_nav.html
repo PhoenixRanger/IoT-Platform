@@ -1,0 +1,9 @@
+<nav class="primary-nav" aria-label="Primary navigation">
+{% for key, href, label in [
+    ('dashboard', '/', 'Dashboard'),
+    ('nodes', '/nodes', 'All Nodes'),
+    ('organization', '/fleet/organization', 'Manage Groups & Tags'),
+    ('components', '/components', 'Component Library'),
+    ('hardware_platforms', '/hardware-platforms', 'Hardware Platform Library')
+] %}<a class="button-link {{ 'button-primary' if active_section == key else 'button-secondary' }}" href="{{ href }}"{% if active_section == key %} aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}
+</nav>

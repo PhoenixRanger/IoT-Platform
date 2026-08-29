@@ -4,9 +4,9 @@ A Raspberry Pi + ESP32 environmental monitoring dashboard and early-stage agricu
 
 ## Current Version
 
-**v1.16.1 — Explicit Telemetry Reporting Cycles**
+**v1.17.0 — Hardware Platform Registry & Programmable Resource Model**
 
-This patch release adds an explicit `cycle_id` to canonical Instance-aware telemetry so independently delivered packets from one physical reporting cycle remain one dashboard row, even across server timestamp boundaries.
+This release adds reusable Hardware Platform Definitions, normalized programmable GPIO resources with controlled signal capabilities, immutable Node assignments, and a Hardware Platform Library.
 
 ## Features
 
@@ -17,6 +17,7 @@ This patch release adds an explicit `cycle_id` to canonical Instance-aware telem
 - Editable node names, locations, categories, GPS coordinates, and administrative enabled state
 - Generic sensor, actuator, and communication capabilities with expected/reported comparison
 - Reusable sensor/actuator definitions with normalized interface and non-communication capability mappings
+- Reusable Hardware Platform Definitions with programmable GPIO resources and immutable Node assignments
 - Connected-component inventory with editable child labels and stable `ci_…` runtime identities
 - Count-aware Expected capabilities derived from active capability instances
 - Clickable dashboard status tile and `/nodes/<node_id>` node management details
@@ -95,6 +96,9 @@ The OTA partition scheme is retained in every environment. Do not hardcode trans
 - `GET|POST /api/nodes/<node_id>/organization` — individual memberships
 - `POST /api/fleet/organization` — transactional bulk membership mutation
 - `GET /api/capabilities` — system capability registry
+- `GET|POST /api/hardware-platforms` — list/create reusable Hardware Platform Definitions
+- `GET|PATCH|DELETE /api/hardware-platforms/<hp_…>` — inspect/update or delete a never-used platform
+- `PUT /api/nodes/<node_id>/hardware-platform` — assign an unassigned Node (assignment is immutable)
 - `GET|POST /api/components` — list/create reusable component definitions
 - `GET|PATCH|DELETE /api/components/<definition_key>` — inspect/update or lifecycle-remove an unassigned definition; the key is an internal routing identity and is not shown in the library UI
 - `GET|POST /api/nodes/<node_id>/components` — active inventory (add `?include_removed=true` for history) and connected-component creation
@@ -110,6 +114,7 @@ The OTA partition scheme is retained in every environment. Do not hardcode trans
 - `GET /nodes/<node_id>/technical` — technical/runtime/capability view
 - `GET /nodes` — fleet registry and node navigation
 - `GET /fleet/organization` — group/tag definition management
+- `GET /hardware-platforms` — reusable Hardware Platform Library
 - `GET /components` — reusable Component Library
 - `GET /nodes/<node_id>/components/<legacy_route_id>` — connected-component detail
 
@@ -155,5 +160,6 @@ The public repository is intended to begin with the mature v1.10.1 working tree 
 - **v1.15.0** — reusable component definitions, node physical inventory, lifecycle removal, and component-derived Expected capabilities.
 - **v1.16.0** — immutable Capability Instance runtime telemetry identity, editable labels, and dashboard integration.
 - **v1.16.1** — explicit per-boot reporting-cycle identity fixes split dashboard rows.
+- **v1.17.0** — reusable Hardware Platform registry, programmable resource eligibility, and immutable Node assignment foundation.
 
 Future work continues toward MQTT security, LoRaWAN, actuator and node management, and a dedicated Linux property server. See the architecture and operations documents for the current design and workflows.

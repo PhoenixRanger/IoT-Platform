@@ -7,12 +7,12 @@
 </head>
 <body>
     <main class="dashboard">
-        <header class="header header-actions">
+        <header class="header details-header">
             <div>
                 <h1>Pi IoT Dashboard</h1>
                 <p>Live environmental monitoring from ESP32 sensor nodes</p>
             </div>
-            <a class="button-link button-primary" href="/nodes">All Nodes</a>
+            {% set active_section = 'dashboard' %}{% include '_primary_nav.html' %}
         </header>
 
         <nav id="dashboardNodeTabs" class="node-tabs" aria-label="Node views">

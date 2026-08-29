@@ -123,6 +123,11 @@ def init_db():
         if column not in existing_columns:
             cur.execute(f"ALTER TABLE nodes ADD COLUMN {column} {definition}")
 
+    # Hardware Platforms are an additive registry.  Importing here avoids a
+    # database-module cycle while keeping init_db() the single migration entry.
+    from app.hardware_platforms import migrate_hardware_platforms
+    migrate_hardware_platforms(cur, existing_columns)
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS sensors (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -556,7 +561,7 @@ def get_node(node_id):
     row = conn.execute(
         """
         SELECT node_id, name, location, category, latitude, longitude,
-               enabled, node_type, hardware_model,
+               enabled, node_type, hardware_model, hardware_platform_id,
                firmware_name, firmware_version, ota_hostname, created_at
         FROM nodes WHERE node_id = ?
         """,
@@ -567,6 +572,11 @@ def get_node(node_id):
         return None
     node = dict(row)
     node["enabled"] = bool(node["enabled"])
+    from app.hardware_platforms import get_hardware_platform
+    node["hardware_platform"] = (
+        get_hardware_platform(node["hardware_platform_id"])
+        if node["hardware_platform_id"] else None
+    )
     return node
 
 
@@ -648,6 +658,9 @@ def _component_rows(conn, definition_key=None, include_removed=False):
         SELECT definition.*,
                SUM(CASE WHEN connected.lifecycle_status = 'active' THEN 1 ELSE 0 END)
                    AS active_connected_component_count,
+               COUNT(DISTINCT CASE WHEN connected.lifecycle_status = 'active'
+                                    THEN connected.node_db_id END)
+                   AS active_node_count,
                COUNT(connected.id) AS historical_connected_component_count
         FROM component_definitions AS definition
         LEFT JOIN connected_components AS connected
@@ -659,7 +672,8 @@ def _component_rows(conn, definition_key=None, include_removed=False):
     definitions = {row["id"]: {key: row[key] for key in (
         "definition_key", "display_name", "manufacturer", "model", "component_class",
         "created_at", "updated_at", "lifecycle_status", "removed_at",
-        "active_connected_component_count", "historical_connected_component_count")}
+        "active_connected_component_count", "active_node_count",
+        "historical_connected_component_count")}
         | {"interfaces": [], "capabilities": []} for row in rows}
     if not definitions:
         return []
@@ -1180,6 +1194,7 @@ def get_nodes_overview(offline_threshold_seconds=60):
     conn.row_factory = sqlite3.Row
     rows = conn.execute("""
         SELECT n.id, n.node_id, n.name, n.enabled,
+               platform.hardware_platform_id, platform.display_name AS hardware_platform_name,
                (SELECT m.timestamp
                 FROM measurements AS m
                 WHERE m.node_id = n.node_id
@@ -1203,12 +1218,15 @@ def get_nodes_overview(offline_threshold_seconds=60):
                      )
                ) AS has_missing_capability
         FROM nodes AS n
+        LEFT JOIN hardware_platforms AS platform
+          ON platform.hardware_platform_id = n.hardware_platform_id
         ORDER BY n.node_id ASC
     """).fetchall()
     node_ids = [row["id"] for row in rows]
-    organization = {node_db_id: {"groups": [], "tags": [], "expected_capabilities": []}
+    organization = {node_db_id: {"groups": [], "tags": [], "expected_capabilities": [],
+                                 "components": []}
                     for node_db_id in node_ids}
-    # Three bounded, indexed relationship queries avoid an overview N+1 while
+    # Four bounded, indexed relationship queries avoid an overview N+1 while
     # keeping each reusable definition as structured JSON.
     for relation, table, definition, key in (
         ("groups", "node_groups", "groups", "group_id"),
@@ -1236,6 +1254,20 @@ def get_nodes_overview(offline_threshold_seconds=60):
         organization[item["node_db_id"]]["expected_capabilities"].append(
             item["capability_key"]
         )
+    for item in conn.execute("""
+        SELECT DISTINCT connected.node_db_id, definition.definition_key,
+                        definition.display_name
+        FROM connected_components AS connected
+        JOIN component_definitions AS definition
+          ON definition.id = connected.component_definition_id
+        WHERE connected.lifecycle_status = 'active'
+          AND definition.lifecycle_status = 'active'
+        ORDER BY definition.display_name COLLATE NOCASE, definition.definition_key
+    """):
+        organization[item["node_db_id"]]["components"].append({
+            "definition_key": item["definition_key"],
+            "display_name": item["display_name"],
+        })
     conn.close()
 
     overview = []
@@ -1252,6 +1284,10 @@ def get_nodes_overview(offline_threshold_seconds=60):
             "name": row["name"],
             "status": status,
             "health": calculate_node_health(status, capability_state),
+            "hardware_platform": ({
+                "hardware_platform_id": row["hardware_platform_id"],
+                "display_name": row["hardware_platform_name"],
+            } if row["hardware_platform_id"] else None),
             **organization[row["id"]],
         })
     return overview

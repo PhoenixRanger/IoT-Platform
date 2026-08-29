@@ -313,6 +313,41 @@ def test_definition_archive_requires_zero_active_assignments_and_preserves_histo
     assert "definition_key already exists" in recreated.get_json()["error"]
 
 
+def test_component_definition_distinct_active_node_usage_and_fleet_membership(client):
+    client.post('/api/components', json=definition())
+    create_node(client, 'node-a'); create_node(client, 'node-b')
+    created = []
+    for node_id, label in (('node-a', 'First'), ('node-a', 'Second'), ('node-b', 'Third')):
+        created.append(client.post(f'/api/nodes/{node_id}/components', json={
+            'definition_key': 'test-multi-sensor', 'label': label
+        }).get_json())
+    current = client.get('/api/components/test-multi-sensor').get_json()
+    assert current['active_node_count'] == 2
+    assert current['active_connected_component_count'] == 3
+    assert current['historical_connected_component_count'] == 3
+    overview = {item['node_id']: item for item in client.get('/api/nodes/overview').get_json()}
+    assert overview['node-a']['components'] == [{
+        'definition_key': 'test-multi-sensor', 'display_name': 'Test Multi Sensor'
+    }]
+    assert overview['node-b']['components'] == [{
+        'definition_key': 'test-multi-sensor', 'display_name': 'Test Multi Sensor'
+    }]
+    assert client.delete(
+        f"/api/nodes/node-b/components/{created[2]['connected_component_id']}"
+    ).status_code == 200
+    current = client.get('/api/components/test-multi-sensor').get_json()
+    assert current['active_node_count'] == 1
+    assert current['active_connected_component_count'] == 2
+    assert current['historical_connected_component_count'] == 3
+    overview = {item['node_id']: item for item in client.get('/api/nodes/overview').get_json()}
+    assert overview['node-b']['components'] == []
+    page = client.get('/components').get_data(as_text=True)
+    script = client.get('/static/components.js').get_data(as_text=True)
+    assert '<th>Nodes</th>' in page
+    assert '/nodes?component=' in script and 'item.active_node_count' in script
+    assert 'usageLink.className = "usage-count-link"' in script
+
+
 def test_archived_seed_definition_is_not_resurrected(isolated_database):
     from app.database import delete_component_definition, init_db, list_component_definitions
 
@@ -628,7 +663,7 @@ def test_component_pages_and_navigation_contract(client):
     fleet=client.get("/nodes").get_data(as_text=True)
     technical=client.get("/nodes/node-a/technical").get_data(as_text=True)
     assert "Component Library" in library and "+ Create Component" in library
-    assert fleet.index('href="/components"') < fleet.index('href="/fleet/organization"') < fleet.index('href="/"')
+    assert fleet.index('href="/"') < fleet.index('href="/nodes"') < fleet.index('href="/fleet/organization"') < fleet.index('href="/components"') < fleet.index('href="/hardware-platforms"')
     assert "+ Add Component" in technical and "nodeComponentRows" in technical and "removeDialog" in technical
     item=client.post("/api/nodes/node-a/components",json={"definition_key":"te-ms8607","label":"Outside","location":"outside","zone":None}).get_json()
     page=client.get(f'/nodes/node-a/components/{item["connected_component_id"]}')

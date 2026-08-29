@@ -1,6 +1,6 @@
 <!DOCTYPE html><html><head><title>All Nodes — Pi IoT Dashboard</title><link rel="stylesheet" href="/static/style.css"></head>
 <body><main class="dashboard">
-<header class="header details-header"><div><h1>All Nodes</h1><p>Fleet registry and node navigation</p></div><div class="header-actions fleet-header-actions"><a class="button-link button-secondary" href="/components">Component Library</a><a class="button-link button-secondary" href="/fleet/organization">Manage Groups &amp; Tags</a><a class="button-link button-primary" href="/">Dashboard</a></div></header>
+<header class="header details-header"><div><h1>All Nodes</h1><p>Fleet registry and node navigation</p></div>{% set active_section = 'nodes' %}{% include '_primary_nav.html' %}</header>
 <section class="fleet-controls" aria-label="Fleet controls">
  <label class="search-field" for="nodeSearch"><span class="visually-hidden">Search nodes</span><input id="nodeSearch" type="search" placeholder="Search nodes..." autocomplete="off"></label>
  <div id="filterControl" class="menu-wrap"><button id="toggleFilters" type="button" aria-expanded="false">Filters ▾</button><div id="filterPanel" class="filter-panel transient-menu" hidden></div></div>
