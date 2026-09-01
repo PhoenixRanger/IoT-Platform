@@ -508,3 +508,19 @@ dialog select,dialog input:not([type="checkbox"]) { box-sizing:border-box; width
 .usage-count-link:hover { background:#dbeafe; }
 .usage-count-link:focus-visible { outline:3px solid #60a5fa; outline-offset:2px; }
 @media(max-width:700px) { .primary-nav { justify-content:flex-start; } .details-header { align-items:stretch; flex-direction:column; } }
+.wide-dialog { width: min(760px, calc(100vw - 2rem)); }
+.interface-signal-block,.mapping-summary { border:1px solid #dfe5e8;border-radius:8px;padding:.75rem;margin:.6rem 0; }
+.interface-signal-block .form-row { display:grid;grid-template-columns:1fr 1fr;gap:.75rem; }
+.endpoint-choices,.inline-actions,.filter-buttons { display:flex;gap:.75rem;flex-wrap:wrap;align-items:center; }
+.addresses { display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.6rem; }
+.addresses input { width:5rem; }
+.mapping-state { display:inline-block;font-weight:600;margin-bottom:.5rem; }
+.state-success { color:#167545; }
+.state-warning { color:#a16207; }
+.state-danger { color:#b42318; }
+#mappingFields fieldset label { display:grid;grid-template-columns:minmax(8rem,1fr) 2fr;gap:.75rem;align-items:center;margin:.5rem 0; }
+.filter-buttons button { background:#263f4a;color:#fff; }
+.filter-buttons button:hover { background:#374151; }
+.filter-buttons button:focus-visible { outline:3px solid #60a5fa;outline-offset:2px; }
+.filter-buttons .active,.filter-buttons .active:hover { background:#f8fafc;color:#111827; }
+.allocation-section { margin-top:1rem; }

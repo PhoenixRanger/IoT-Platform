@@ -427,6 +427,8 @@ def init_db():
                        (node_id, measurement_cycle_id, timestamp, id)
                    WHERE measurement_cycle_id IS NOT NULL""")
     _seed_component_definitions(cur)
+    from app.component_mapping import migrate as migrate_component_mapping
+    migrate_component_mapping(cur)
     _reconcile_capability_instances(cur, include_removed_missing=True)
 
     conn.commit()
@@ -587,14 +589,15 @@ def _clean_optional_text(value, field):
 
 
 def _validate_component_definition(values, creating=False):
-    required = {"display_name", "component_class",
-                "interfaces", "capabilities"} if creating else set()
-    allowed = {"display_name", "manufacturer", "model", "component_class", "interfaces", "capabilities"}
+    required = {"display_name", "component_class", "capabilities"} if creating else set()
+    allowed = {"display_name", "manufacturer", "model", "component_class", "interfaces",
+               "interfaces_signals", "capabilities"}
     # Accept an explicitly named legacy/API definition key for compatibility;
     # the normal UI never asks users to create or edit one.
     if creating:
         allowed.add("definition_key")
-    if not isinstance(values, dict) or required - set(values) or set(values) - allowed:
+    if (not isinstance(values, dict) or required - set(values) or set(values) - allowed
+            or (creating and not ({"interfaces", "interfaces_signals"} & set(values)))):
         if creating:
             raise ValueError("A complete component definition is required")
         raise ValueError("Request contains unsupported or missing fields")
@@ -632,6 +635,9 @@ def _validate_component_definition(values, creating=False):
             if unknown:
                 raise ValueError(f"Unknown interface type(s): {', '.join(unknown)}")
             result[field] = items
+    if "interfaces_signals" in values:
+        from app.component_mapping import validate_interfaces
+        result["interfaces_signals"] = validate_interfaces(values["interfaces_signals"])
     if "capabilities" in values:
         items = values["capabilities"]
         if not isinstance(items, list) or any(not isinstance(item, str) for item in items):
@@ -674,7 +680,8 @@ def _component_rows(conn, definition_key=None, include_removed=False):
         "created_at", "updated_at", "lifecycle_status", "removed_at",
         "active_connected_component_count", "active_node_count",
         "historical_connected_component_count")}
-        | {"interfaces": [], "capabilities": []} for row in rows}
+        | {"interfaces": [], "interfaces_signals": [], "capabilities": [],
+           "technical_locked": bool(row["historical_connected_component_count"])} for row in rows}
     if not definitions:
         return []
     ids = list(definitions)
@@ -697,6 +704,10 @@ def _component_rows(conn, definition_key=None, include_removed=False):
         definitions[row["component_definition_id"]]["capabilities"].append({
             key: row[key] for key in ("capability_key", "display_name", "capability_class", "description")
         })
+    from app.component_mapping import load_interfaces
+    richer = load_interfaces(conn, ids)
+    for definition_id, structures in richer.items():
+        definitions[definition_id]["interfaces_signals"] = structures
     return list(definitions.values())
 
 
@@ -724,6 +735,22 @@ def _replace_component_relationships(cur, definition_id, values):
         cur.execute("DELETE FROM component_interface_requirements WHERE component_definition_id = ?", (definition_id,))
         cur.executemany("INSERT INTO component_interface_requirements (component_definition_id, interface_type) VALUES (?, ?)",
                         [(definition_id, item) for item in values["interfaces"]])
+        if "interfaces_signals" not in values:
+            from app.component_mapping import replace_interfaces, validate_interfaces
+            structures = []
+            for item in values["interfaces"]:
+                if item in {"i2c", "spi", "uart"}:
+                    structures.append({"kind": "protocol", "protocol": item})
+                else:
+                    structures.append({
+                        "kind": "direct_signal",
+                        "signal_type": "analog_input" if item == "analog_signal" else "digital_io",
+                        "endpoint_label": "SIGNAL",
+                    })
+            replace_interfaces(cur, definition_id, validate_interfaces(structures))
+    if "interfaces_signals" in values:
+        from app.component_mapping import replace_interfaces
+        replace_interfaces(cur, definition_id, values["interfaces_signals"])
 
 
 def create_component_definition(values):
@@ -750,7 +777,15 @@ def create_component_definition(values):
             (definition_key, display_name, manufacturer, model, component_class, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)""", (definition_key,) + tuple(values[key] for key in (
                 "display_name", "manufacturer", "model", "component_class")) + (timestamp, timestamp))
-        _replace_component_relationships(cur, cur.lastrowid, values)
+        definition_id = cur.lastrowid
+        _replace_component_relationships(cur, definition_id, values)
+        # New clients use the richer model; retain a non-authoritative broad summary
+        # for old clients during the compatibility window.
+        if "interfaces_signals" in values and "interfaces" not in values:
+            summaries = sorted({item.get("protocol") or ("analog_signal" if item.get("signal_type", "").startswith("analog") else "digital_signal")
+                                for item in values["interfaces_signals"]})
+            cur.executemany("INSERT OR IGNORE INTO component_interface_requirements VALUES(?,?)",
+                            [(definition_id, item) for item in summaries])
         conn.commit()
     except Exception:
         conn.rollback()
@@ -776,7 +811,11 @@ def update_component_definition(definition_key, values):
             return None
         if "capabilities" in values:
             _validated_component_capability_ids(cur, values["capabilities"])
-        metadata = {key: value for key, value in values.items() if key not in {"interfaces", "capabilities"}}
+        technical = {"interfaces", "interfaces_signals", "component_class"}
+        if set(values) & technical and cur.execute(
+                "SELECT 1 FROM connected_components WHERE component_definition_id=? LIMIT 1", row).fetchone():
+            raise ValueError("Technical Interfaces & Signals are permanently locked after first Connected Component use")
+        metadata = {key: value for key, value in values.items() if key not in {"interfaces", "interfaces_signals", "capabilities"}}
         if metadata:
             metadata["updated_at"] = now_string()
             assignments = ", ".join(f"{key} = ?" for key in metadata)
@@ -786,7 +825,7 @@ def update_component_definition(definition_key, values):
             _reconcile_capability_instances(
                 cur, component_definition_id=row[0], include_removed_missing=False
             )
-        if set(values) <= {"interfaces", "capabilities"}:
+        if set(values) <= {"interfaces", "interfaces_signals", "capabilities"}:
             cur.execute("UPDATE component_definitions SET updated_at = ? WHERE id = ?", (now_string(), row[0]))
         conn.commit()
     except Exception:
@@ -946,7 +985,7 @@ def _connected_component_rows(conn, node_id, connected_component_id=None, includ
         ORDER BY connected.created_at, connected.id
     """, params).fetchall()
     results = [dict(row) | {
-        "interfaces": [], "capabilities": [], "capability_instances": []
+        "interfaces": [], "interfaces_signals": [], "capabilities": [], "capability_instances": []
     } for row in rows]
     if not results:
         return results
@@ -963,6 +1002,15 @@ def _connected_component_rows(conn, node_id, connected_component_id=None, includ
     """, ids):
         for item in by_definition[definition_id]:
             item["interfaces"].append(interface)
+    from app.component_mapping import load_interfaces, mapping_state
+    richer = load_interfaces(conn, ids)
+    for definition_id, structures in richer.items():
+        for item in by_definition[definition_id]:
+            item["interfaces_signals"] = structures
+            item["mapping_state"] = mapping_state(
+                conn, item["connected_db_id"], definition_id,
+                item["lifecycle_status"] == "active"
+            )
     for row in conn.execute(f"""
         SELECT mapping.component_definition_id, capability.capability_key,
                capability.display_name, capability.capability_class, capability.description
@@ -1124,6 +1172,8 @@ def remove_connected_component(node_id, connected_component_id):
             SET lifecycle_status = 'removed', removed_at = ?, updated_at = ?
             WHERE connected_component_id = ? AND lifecycle_status = 'active'""",
             (timestamp, timestamp, row[0]))
+        from app.component_mapping import deactivate_mappings
+        deactivate_mappings(conn.cursor(), row[0])
         conn.commit()
         return True
     except Exception:

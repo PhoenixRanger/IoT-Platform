@@ -38,6 +38,9 @@ from app.hardware_platforms import (
     assign_hardware_platform, create_hardware_platform, delete_hardware_platform,
     get_hardware_platform, list_hardware_platforms, update_hardware_platform,
 )
+from app.component_mapping import (
+    MappingValidationError, get_mapping, node_allocation, save_mapping,
+)
 
 
 routes = Blueprint("routes", __name__)
@@ -292,6 +295,32 @@ def connected_component(node_id, connected_component_id):
         ))
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
+
+
+@routes.route("/api/nodes/<node_id>/components/<connected_component_id>/hardware-mapping",
+              methods=["GET", "PUT"])
+def connected_component_hardware_mapping(node_id, connected_component_id):
+    mapping = get_mapping(node_id, connected_component_id)
+    if mapping is None:
+        return jsonify({"error": "Connected component not found"}), 404
+    if request.method == "GET":
+        return jsonify(mapping)
+    try:
+        return jsonify(save_mapping(node_id, connected_component_id,
+                                    request.get_json(silent=True)))
+    except LookupError as error:
+        return jsonify({"error": str(error)}), 404
+    except MappingValidationError as error:
+        return jsonify({"error": "Hardware mapping validation failed",
+                        "validation_errors": error.errors}), 400
+
+
+@routes.route("/api/nodes/<node_id>/hardware-allocation")
+def node_hardware_allocation(node_id):
+    allocation = node_allocation(node_id)
+    if allocation is None:
+        return jsonify({"error": "Node not found"}), 404
+    return jsonify(allocation)
 
 
 def _validated_name_payload():

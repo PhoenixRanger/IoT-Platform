@@ -679,7 +679,7 @@ def test_component_library_and_node_component_menu_contract(client):
     styles = client.get("/static/style.css").get_data(as_text=True)
 
     for column in ("Name", "Class", "Manufacturer / Model",
-                   "Interface(s)", "Capabilities"):
+                   "Interfaces &amp; Signals", "Capabilities"):
         assert f"<th>{column}</th>" in library
     assert "<th>Component ID</th>" not in library
     assert 'id="componentId"' not in library

@@ -4,9 +4,9 @@ A Raspberry Pi + ESP32 environmental monitoring dashboard and early-stage agricu
 
 ## Current Version
 
-**v1.17.0 — Hardware Platform Registry & Programmable Resource Model**
+**v1.18.0 — Component Endpoints & Hardware Mapping**
 
-This release adds reusable Hardware Platform Definitions, normalized programmable GPIO resources with controlled signal capabilities, immutable Node assignments, and a Hardware Platform Library.
+This release adds reusable protocol interfaces and direct-signal endpoints, atomic Connected Component hardware mappings, shared-bus validation, and node-wide Hardware Allocation views on top of the v1.17 Hardware Platform Registry.
 
 ## Features
 
@@ -18,6 +18,7 @@ This release adds reusable Hardware Platform Definitions, normalized programmabl
 - Generic sensor, actuator, and communication capabilities with expected/reported comparison
 - Reusable sensor/actuator definitions with normalized interface and non-communication capability mappings
 - Reusable Hardware Platform Definitions with programmable GPIO resources and immutable Node assignments
+- Reusable Component Interfaces & Signals with stable endpoints and node-specific atomic Hardware Mapping
 - Connected-component inventory with editable child labels and stable `ci_…` runtime identities
 - Count-aware Expected capabilities derived from active capability instances
 - Clickable dashboard status tile and `/nodes/<node_id>` node management details
@@ -101,6 +102,8 @@ The OTA partition scheme is retained in every environment. Do not hardcode trans
 - `PUT /api/nodes/<node_id>/hardware-platform` — assign an unassigned Node (assignment is immutable)
 - `GET|POST /api/components` — list/create reusable component definitions
 - `GET|PATCH|DELETE /api/components/<definition_key>` — inspect/update or lifecycle-remove an unassigned definition; the key is an internal routing identity and is not shown in the library UI
+- `GET|PUT /api/nodes/<node_id>/components/<connected_component_id>/hardware-mapping` — retrieve or atomically replace one physical component mapping
+- `GET /api/nodes/<node_id>/hardware-allocation` — derived node mapping state and all board resource allocations
 - `GET|POST /api/nodes/<node_id>/components` — active inventory (add `?include_removed=true` for history) and connected-component creation
 - `GET|PATCH|DELETE /api/nodes/<node_id>/components/<connected_component_id>` — inspect/edit metadata or lifecycle-remove a connected component
 - `PUT /api/nodes/<node_id>/capabilities` — legacy expected-capability storage compatibility endpoint; it does not affect current component-derived Expected state
@@ -161,5 +164,6 @@ The public repository is intended to begin with the mature v1.10.1 working tree 
 - **v1.16.0** — immutable Capability Instance runtime telemetry identity, editable labels, and dashboard integration.
 - **v1.16.1** — explicit per-boot reporting-cycle identity fixes split dashboard rows.
 - **v1.17.0** — reusable Hardware Platform registry, programmable resource eligibility, and immutable Node assignment foundation.
+- **v1.18.0** — reusable Component Endpoints, atomic node-specific Hardware Mapping, shared buses, and allocation views.
 
 Future work continues toward MQTT security, LoRaWAN, actuator and node management, and a dedicated Linux property server. See the architecture and operations documents for the current design and workflows.

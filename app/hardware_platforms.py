@@ -29,7 +29,7 @@ def _seed_resources(names, factory):
     return [{"resource": f"GPIO{pin}", "capabilities": sorted(factory(pin))} for pin in names]
 
 
-def _natural_resource_key(identifier):
+def natural_resource_key(identifier):
     """Return a deterministic case-insensitive natural ordering key."""
     return tuple(
         (0, int(part)) if part.isdigit() else (1, part.casefold())
@@ -188,7 +188,7 @@ def _rows(conn, public_id=None):
             "capabilities": capabilities[resource["id"]],
         })
     for item in result:
-        item["resources"].sort(key=lambda resource: _natural_resource_key(resource["resource"]))
+        item["resources"].sort(key=lambda resource: natural_resource_key(resource["resource"]))
     return result
 
 
