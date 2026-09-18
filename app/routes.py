@@ -41,6 +41,11 @@ from app.hardware_platforms import (
 from app.component_mapping import (
     MappingValidationError, get_mapping, node_allocation, save_mapping,
 )
+from app.runtime_configuration import (
+    RuntimeConfigurationValidationError, definition_runtime_settings,
+    get_node_runtime_configuration, list_runtime_settings,
+    replace_definition_runtime_settings, update_component_runtime_configuration,
+)
 
 
 routes = Blueprint("routes", __name__)
@@ -83,6 +88,13 @@ def node_technical_page(node_id):
     if get_node_details(node_id) is None:
         return render_template("node_technical.html", node_id=node_id), 404
     return render_template("node_technical.html", node_id=node_id)
+
+
+@routes.route("/nodes/<node_id>/configuration")
+def node_configuration_page(node_id):
+    if get_node_details(node_id) is None:
+        return render_template("node_configuration.html", node_id=node_id), 404
+    return render_template("node_configuration.html", node_id=node_id)
 
 
 @routes.route("/nodes/<node_id>/components/<connected_component_id>")
@@ -184,6 +196,52 @@ def nodes_overview():
 @routes.route("/api/capabilities")
 def capabilities():
     return jsonify(get_capabilities())
+
+
+@routes.route("/api/runtime-settings")
+def runtime_settings():
+    return jsonify(list_runtime_settings())
+
+
+@routes.route("/api/components/<definition_key>/runtime-settings", methods=["GET", "PUT"])
+def component_definition_runtime_settings(definition_key):
+    current = definition_runtime_settings(definition_key)
+    if current is None:
+        return jsonify({"error": "Component definition not found"}), 404
+    if request.method == "GET":
+        return jsonify(current)
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or set(payload) != {"runtime_settings"}:
+        return jsonify({"error": "Request must contain only runtime_settings"}), 400
+    try:
+        return jsonify(replace_definition_runtime_settings(
+            definition_key, payload["runtime_settings"]
+        ))
+    except ValueError as error:
+        status = 409 if "locked" in str(error) else 400
+        return jsonify({"error": str(error)}), status
+
+
+@routes.route("/api/nodes/<node_id>/runtime-configuration")
+def node_runtime_configuration(node_id):
+    configuration = get_node_runtime_configuration(node_id)
+    if configuration is None:
+        return jsonify({"error": "Node not found"}), 404
+    return jsonify(configuration)
+
+
+@routes.route("/api/nodes/<node_id>/components/<connected_component_id>/runtime-configuration",
+              methods=["PUT"])
+def connected_component_runtime_configuration(node_id, connected_component_id):
+    try:
+        return jsonify(update_component_runtime_configuration(
+            node_id, connected_component_id, request.get_json(silent=True)
+        ))
+    except LookupError as error:
+        return jsonify({"error": str(error)}), 404
+    except RuntimeConfigurationValidationError as error:
+        return jsonify({"error": "Runtime configuration validation failed",
+                        "validation_errors": error.errors}), 400
 
 
 @routes.route("/api/components", methods=["GET", "POST"])

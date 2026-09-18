@@ -429,6 +429,8 @@ def init_db():
     _seed_component_definitions(cur)
     from app.component_mapping import migrate as migrate_component_mapping
     migrate_component_mapping(cur)
+    from app.runtime_configuration import migrate as migrate_runtime_configuration
+    migrate_runtime_configuration(cur)
     _reconcile_capability_instances(cur, include_removed_missing=True)
 
     conn.commit()
@@ -681,6 +683,7 @@ def _component_rows(conn, definition_key=None, include_removed=False):
         "active_connected_component_count", "active_node_count",
         "historical_connected_component_count")}
         | {"interfaces": [], "interfaces_signals": [], "capabilities": [],
+           "supported_runtime_settings": [],
            "technical_locked": bool(row["historical_connected_component_count"])} for row in rows}
     if not definitions:
         return []
@@ -703,6 +706,20 @@ def _component_rows(conn, definition_key=None, include_removed=False):
     """, ids):
         definitions[row["component_definition_id"]]["capabilities"].append({
             key: row[key] for key in ("capability_key", "display_name", "capability_class", "description")
+        })
+    for row in conn.execute(f"""
+        SELECT supported.component_definition_id, setting.*
+        FROM component_definition_runtime_settings supported
+        JOIN runtime_setting_definitions setting
+          ON setting.id=supported.runtime_setting_definition_id
+        WHERE supported.component_definition_id IN ({placeholders})
+        ORDER BY setting.setting_key
+    """, ids):
+        definitions[row["component_definition_id"]]["supported_runtime_settings"].append({
+            "setting_key": row["setting_key"], "display_name": row["display_name"],
+            "description": row["description"], "value_type": row["value_type"],
+            "unit": row["unit"], "minimum": row["minimum_integer"],
+            "maximum": row["maximum_integer"], "default_value": row["default_integer"],
         })
     from app.component_mapping import load_interfaces
     richer = load_interfaces(conn, ids)

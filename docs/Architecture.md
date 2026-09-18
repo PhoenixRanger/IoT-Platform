@@ -44,3 +44,9 @@ Legacy measurements currently identify sources only by `sensor_type` strings. No
 Firmware publishes a complete `capabilities` array as a metadata-only message on startup and each MQTT reconnect. The subscriber validates every key before atomically replacing the reported set. An unknown key rejects the entire report and preserves the prior set. Legacy reading messages without capabilities remain unchanged.
 
 Capability state is `unknown` before any report, `capability_mismatch` when a reported set omits an expected key, and otherwise `healthy`; extra reported functions are informational. Overall health applies disabled, offline, and unknown runtime precedence before this capability state.
+
+## Node Runtime Configuration
+
+Runtime Configuration is a server-owned domain that is independent from physical Hardware Mapping and device-reported runtime state. Each active Connected Component has a configured Enabled state and inherits the registered Runtime Settings selected by its Component Definition. The registry currently contains only `measurement_interval` (integer seconds, 1–86400, default 60). Missing value rows deterministically resolve to the registry default, while non-default overrides are stored relationally.
+
+Each Node has a current Runtime Configuration revision beginning at zero. An atomic component mutation increments it once only when accepted values change; invalid and no-op requests do not increment it. The canonical service/API representation is the boundary for future serializers, so neither firmware nor a future wire protocol needs knowledge of SQLite tables. v1.19 does not deliver, apply, acknowledge, or compare configuration with firmware.

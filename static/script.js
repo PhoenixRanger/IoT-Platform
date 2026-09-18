@@ -11,6 +11,7 @@ function updateNodeNavigation() {
     document.getElementById("dashboardTab").href = `/?node_id=${encodedNodeId}`;
     document.getElementById("detailsTab").href = `/nodes/${encodedNodeId}`;
     document.getElementById("technicalTab").href = `/nodes/${encodedNodeId}/technical`;
+    document.getElementById("configurationTab").href = `/nodes/${encodedNodeId}/configuration`;
 }
 
 function formatSensorName(sensorType) {

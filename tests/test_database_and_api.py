@@ -598,7 +598,8 @@ def test_capability_ui_contract(client):
     for removed in ["capabilityEditor", "editCapabilities", "saveCapabilities", "cancelCapabilities"]:
         assert f'id="{removed}"' not in page
     assert "counts:true" in script
-    assert 'id="nodeComponentRows"' in page
+    configuration = client.get("/nodes/missing/configuration").get_data(as_text=True)
+    assert 'id="nodeComponentRows"' in configuration
     assert 'id="capabilitiesPanel"' in page
     assert "Hardware revision" not in script
     assert "hardware_revision" not in script

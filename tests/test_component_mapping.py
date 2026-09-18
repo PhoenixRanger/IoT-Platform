@@ -979,7 +979,7 @@ def test_migration_corrects_only_generated_dht22_signal_in_place(
 
 def test_compact_signal_labels_selector_vocabulary_and_state_classes():
     components_source = open("static/components.js", encoding="utf-8").read()
-    technical_source = open("static/node_technical.js", encoding="utf-8").read()
+    technical_source = open("static/node_configuration.js", encoding="utf-8").read()
     detail_source = open("static/component_detail.js", encoding="utf-8").read()
     styles = open("static/style.css", encoding="utf-8").read()
 
@@ -1014,7 +1014,7 @@ def test_compact_signal_labels_selector_vocabulary_and_state_classes():
 
 
 def test_hardware_allocation_pill_and_filter_presentation_contract():
-    technical_source = open("static/node_technical.js", encoding="utf-8").read()
+    technical_source = open("static/node_configuration.js", encoding="utf-8").read()
     styles = open("static/style.css", encoding="utf-8").read()
 
     assert "link.className='usage-count-link'" in technical_source

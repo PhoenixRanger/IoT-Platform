@@ -4,9 +4,9 @@ A Raspberry Pi + ESP32 environmental monitoring dashboard and early-stage agricu
 
 ## Current Version
 
-**v1.18.0 — Component Endpoints & Hardware Mapping**
+**v1.19.0 — Node Configuration Core**
 
-This release adds reusable protocol interfaces and direct-signal endpoints, atomic Connected Component hardware mappings, shared-bus validation, and node-wide Hardware Allocation views on top of the v1.17 Hardware Platform Registry.
+This release adds server-owned Connected Component runtime configuration, a platform Runtime Setting Registry, and a dedicated Node Configuration workspace while retaining the v1.18 physical mapping model. Runtime configuration is stored and validated by the server; firmware delivery/application is intentionally not part of this release.
 
 ## Features
 
@@ -20,6 +20,9 @@ This release adds reusable protocol interfaces and direct-signal endpoints, atom
 - Reusable Hardware Platform Definitions with programmable GPIO resources and immutable Node assignments
 - Reusable Component Interfaces & Signals with stable endpoints and node-specific atomic Hardware Mapping
 - Connected-component inventory with editable child labels and stable `ci_…` runtime identities
+- Connected Component Enabled/Disabled configuration and registry-driven Measurement Interval values
+- Atomic Node Runtime Configuration revisions with deterministic registry defaults
+- Compact Runtime Configuration editing with page-level Save/Discard and legacy MS8607xx/DHT22 compatibility
 - Count-aware Expected capabilities derived from active capability instances
 - Clickable dashboard status tile and `/nodes/<node_id>` node management details
 - Compact `/nodes` fleet registry with search, selection, and node navigation
@@ -101,11 +104,15 @@ The OTA partition scheme is retained in every environment. Do not hardcode trans
 - `GET|PATCH|DELETE /api/hardware-platforms/<hp_…>` — inspect/update or delete a never-used platform
 - `PUT /api/nodes/<node_id>/hardware-platform` — assign an unassigned Node (assignment is immutable)
 - `GET|POST /api/components` — list/create reusable component definitions
+- `GET /api/runtime-settings` — platform-owned Runtime Setting Registry
+- `GET|PUT /api/components/<definition_key>/runtime-settings` — supported settings (mutable only before historical use)
 - `GET|PATCH|DELETE /api/components/<definition_key>` — inspect/update or lifecycle-remove an unassigned definition; the key is an internal routing identity and is not shown in the library UI
 - `GET|PUT /api/nodes/<node_id>/components/<connected_component_id>/hardware-mapping` — retrieve or atomically replace one physical component mapping
 - `GET /api/nodes/<node_id>/hardware-allocation` — derived node mapping state and all board resource allocations
 - `GET|POST /api/nodes/<node_id>/components` — active inventory (add `?include_removed=true` for history) and connected-component creation
 - `GET|PATCH|DELETE /api/nodes/<node_id>/components/<connected_component_id>` — inspect/edit metadata or lifecycle-remove a connected component
+- `GET /api/nodes/<node_id>/runtime-configuration` — canonical current server-owned Runtime Configuration
+- `PUT /api/nodes/<node_id>/components/<connected_component_id>/runtime-configuration` — atomically validate/save one component configuration
 - `PUT /api/nodes/<node_id>/capabilities` — legacy expected-capability storage compatibility endpoint; it does not affect current component-derived Expected state
 - `GET /api/nodes/<node_id>` — metadata and calculated runtime state
 - `PATCH /api/nodes/<node_id>` — update name, location, category, GPS, or enabled state
@@ -115,6 +122,7 @@ The OTA partition scheme is retained in every environment. Do not hardcode trans
 - `GET /api/node-status?node_id=<node_id>` — compatible status endpoint
 - `GET /nodes/<node_id>` — node-details page
 - `GET /nodes/<node_id>/technical` — technical/runtime/capability view
+- `GET /nodes/<node_id>/configuration` — Physical and Runtime configuration workspace
 - `GET /nodes` — fleet registry and node navigation
 - `GET /fleet/organization` — group/tag definition management
 - `GET /hardware-platforms` — reusable Hardware Platform Library
@@ -165,5 +173,6 @@ The public repository is intended to begin with the mature v1.10.1 working tree 
 - **v1.16.1** — explicit per-boot reporting-cycle identity fixes split dashboard rows.
 - **v1.17.0** — reusable Hardware Platform registry, programmable resource eligibility, and immutable Node assignment foundation.
 - **v1.18.0** — reusable Component Endpoints, atomic node-specific Hardware Mapping, shared buses, and allocation views.
+- **v1.19.0** — server-owned Node Runtime Configuration, registered settings, revisions, and Physical/Runtime UI organization.
 
 Future work continues toward MQTT security, LoRaWAN, actuator and node management, and a dedicated Linux property server. See the architecture and operations documents for the current design and workflows.

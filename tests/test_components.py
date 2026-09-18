@@ -661,7 +661,7 @@ def test_component_pages_and_navigation_contract(client):
     create_node(client)
     library=client.get("/components").get_data(as_text=True)
     fleet=client.get("/nodes").get_data(as_text=True)
-    technical=client.get("/nodes/node-a/technical").get_data(as_text=True)
+    technical=client.get("/nodes/node-a/configuration").get_data(as_text=True)
     assert "Component Library" in library and "+ Create Component" in library
     assert fleet.index('href="/"') < fleet.index('href="/nodes"') < fleet.index('href="/fleet/organization"') < fleet.index('href="/components"') < fleet.index('href="/hardware-platforms"')
     assert "+ Add Component" in technical and "nodeComponentRows" in technical and "removeDialog" in technical
@@ -674,8 +674,8 @@ def test_component_library_and_node_component_menu_contract(client):
     create_node(client)
     library = client.get("/components").get_data(as_text=True)
     library_script = client.get("/static/components.js").get_data(as_text=True)
-    technical = client.get("/nodes/node-a/technical").get_data(as_text=True)
-    technical_script = client.get("/static/node_technical.js").get_data(as_text=True)
+    technical = client.get("/nodes/node-a/configuration").get_data(as_text=True)
+    technical_script = client.get("/static/node_configuration.js").get_data(as_text=True)
     styles = client.get("/static/style.css").get_data(as_text=True)
 
     for column in ("Name", "Class", "Manufacturer / Model",
@@ -753,6 +753,55 @@ def test_component_library_uses_styled_delete_dialog(client):
     assert 'document.getElementById("deleteComponentError").textContent = result.error' in script
     assert 'document.getElementById("deleteComponentDialog").close()' in script
     assert "load();" in script
+
+
+def test_component_definition_runtime_settings_belong_to_save_not_delete(client):
+    """Guard the handler boundary that direct backend API tests cannot cover."""
+    script = client.get("/static/components.js").get_data(as_text=True)
+    delete_start = script.index(
+        'document.getElementById("deleteComponentForm").onsubmit'
+    )
+    component_start = script.index(
+        'document.getElementById("componentForm").onsubmit'
+    )
+    helper_start = script.index("async function saveSupportedRuntimeSettings")
+    delete_handler = script[delete_start:helper_start]
+    component_handler = script[component_start:script.index(
+        'document.getElementById("createComponent").onclick', component_start
+    )]
+    helper = script[helper_start:component_start]
+
+    assert "/runtime-settings" not in delete_handler
+    assert "saveSupportedRuntimeSettings" not in delete_handler
+    assert "await saveSupportedRuntimeSettings(savedDefinitionKey)" in component_handler
+    assert component_handler.index("if (!technicalLocked)") < component_handler.index(
+        "await saveSupportedRuntimeSettings(savedDefinitionKey)"
+    )
+    assert component_handler.index(
+        "await saveSupportedRuntimeSettings(savedDefinitionKey)"
+    ) < component_handler.index('document.getElementById("componentDialog").close()')
+    assert '[name="runtime-settings"]:checked' in helper
+    assert 'method: "PUT"' in helper
+
+
+def test_component_definition_runtime_settings_partial_failure_is_retryable(client):
+    script = client.get("/static/components.js").get_data(as_text=True)
+    component_start = script.index(
+        'document.getElementById("componentForm").onsubmit'
+    )
+    component_handler = script[component_start:script.index(
+        'document.getElementById("createComponent").onclick', component_start
+    )]
+
+    identity_assignment = "editingKey = savedDefinitionKey"
+    settings_save = "await saveSupportedRuntimeSettings(savedDefinitionKey)"
+    assert "const savedDefinitionKey = result.definition_key || editingKey" in component_handler
+    assert component_handler.index(identity_assignment) < component_handler.index(settings_save)
+    assert 'editingKey ? "PATCH" : "POST"' in component_handler
+    assert "Supported Runtime Settings could not be saved" in component_handler
+    assert component_handler.index("return;", component_handler.index(
+        "Supported Runtime Settings could not be saved"
+    )) < component_handler.index('document.getElementById("componentDialog").close()')
 
 
 def test_legacy_dashboard_does_not_guess_connected_component_sources(client):

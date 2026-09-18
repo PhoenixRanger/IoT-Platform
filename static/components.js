@@ -22,6 +22,7 @@ const compactDirectSignalTypes = {
 
 let definitions = [];
 let capabilities = [];
+let runtimeSettings = [];
 let editingKey = null;
 let deletingDefinition = null;
 let interfacesSignals = [];
@@ -43,6 +44,24 @@ function capabilityChoices(selected = []) {
         input.checked = selected.includes(input.value);
         label.append(input, document.createTextNode(capability.display_name));
         root.append(label);
+    });
+}
+
+function runtimeSettingChoices(selected = []) {
+    const root = document.getElementById("runtimeSettingChoices");
+    root.replaceChildren();
+    runtimeSettings.forEach(setting => {
+        const card = document.createElement("label");
+        card.className = "runtime-setting-choice";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.name = "runtime-settings";
+        input.value = setting.setting_key;
+        input.checked = selected.includes(setting.setting_key);
+        input.disabled = technicalLocked;
+        const details = document.createElement("span");
+        details.innerHTML = `<strong>${setting.display_name}</strong><small>Type: ${human(setting.value_type)} · Unit: ${setting.unit} · Range: ${setting.minimum}–${setting.maximum} · Default: ${setting.default_value}</small>`;
+        card.append(input, details); root.append(card);
     });
 }
 
@@ -320,6 +339,7 @@ function openForm(item = null) {
     document.getElementById("interfaceSignalActions").hidden = technicalLocked;
     document.getElementById("formError").textContent = "";
     capabilityChoices(item?.capabilities.map(capability => capability.capability_key));
+    runtimeSettingChoices(item?.supported_runtime_settings.map(setting => setting.setting_key));
     renderInterfacesSignals();
     document.getElementById("componentDialog").showModal();
 }
@@ -362,6 +382,24 @@ document.getElementById("deleteComponentForm").onsubmit = async event => {
     load();
 };
 
+async function saveSupportedRuntimeSettings(definitionKey) {
+    const selected = Array.from(
+        document.querySelectorAll('[name="runtime-settings"]:checked'), item => item.value
+    );
+    const response = await fetch(
+        `/api/components/${encodeURIComponent(definitionKey)}/runtime-settings`,
+        {
+            method: "PUT",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({runtime_settings: selected}),
+        }
+    );
+    if (!response.ok) {
+        const result = await response.json();
+        throw new Error(result.error || "Supported Runtime Settings could not be saved");
+    }
+}
+
 document.getElementById("componentForm").onsubmit = async event => {
     event.preventDefault();
     const payload = {
@@ -389,6 +427,25 @@ document.getElementById("componentForm").onsubmit = async event => {
         document.getElementById("formError").textContent = result.error;
         return;
     }
+    const savedDefinitionKey = result.definition_key || editingKey;
+    if (!savedDefinitionKey) {
+        document.getElementById("formError").textContent =
+            "The Component Definition was saved, but its identity was not returned.";
+        return;
+    }
+    // Preserve the server-created identity before the second request so a
+    // retry after partial failure PATCHes this definition instead of POSTing
+    // a duplicate.
+    editingKey = savedDefinitionKey;
+    if (!technicalLocked) {
+        try {
+            await saveSupportedRuntimeSettings(savedDefinitionKey);
+        } catch (error) {
+            document.getElementById("formError").textContent =
+                `The Component Definition was saved, but Supported Runtime Settings could not be saved. ${error.message}`;
+            return;
+        }
+    }
     document.getElementById("componentDialog").close();
     load();
 };
@@ -410,8 +467,8 @@ document.addEventListener("keydown", event => {
 });
 
 async function load() {
-    const responses = await Promise.all([fetch("/api/components"), fetch("/api/capabilities")]);
-    [definitions, capabilities] = await Promise.all(responses.map(response => response.json()));
+    const responses = await Promise.all([fetch("/api/components"), fetch("/api/capabilities"), fetch("/api/runtime-settings")]);
+    [definitions, capabilities, runtimeSettings] = await Promise.all(responses.map(response => response.json()));
     capabilities = capabilities.filter(
         capability => capability.capability_class !== "communication"
     );

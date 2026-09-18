@@ -184,18 +184,23 @@ def test_node_views_share_node_specific_navigation(client):
     dashboard = client.get(f"/?node_id={node_id}").get_data(as_text=True)
     details = client.get(f"/nodes/{node_id}").get_data(as_text=True)
     technical = client.get(f"/nodes/{node_id}/technical").get_data(as_text=True)
+    configuration = client.get(f"/nodes/{node_id}/configuration").get_data(as_text=True)
     dashboard_script = client.get("/static/script.js").get_data(as_text=True)
 
     assert 'id="dashboardNodeTabs"' in dashboard
     assert 'id="dashboardTab" class="active"' in dashboard
-    assert all(label in dashboard for label in ("Dashboard", "Details", "Technical"))
+    assert all(label in dashboard for label in ("Dashboard", "Details", "Technical", "Configuration"))
+    assert 'id="configurationTab"' in dashboard
     assert "updateNodeNavigation()" in dashboard_script
     assert "encodeURIComponent(selectedNodeId)" in dashboard_script
-    for page, active in ((details, "Details"), (technical, "Technical")):
+    for page, active in ((details, "Details"), (technical, "Technical"),
+                         (configuration, "Configuration")):
         assert f'href="/?node_id={node_id}"' in page
         assert f'href="/nodes/{node_id}"' in page
         assert f'href="/nodes/{node_id}/technical"' in page
-        assert f'class="active" href="/nodes/{node_id}{"/technical" if active == "Technical" else ""}">{active}' in page
+        assert f'href="/nodes/{node_id}/configuration"' in page
+        suffix = {"Details": "", "Technical": "/technical", "Configuration": "/configuration"}[active]
+        assert f'class="active" href="/nodes/{node_id}{suffix}">{active}' in page
 
 
 def test_fleet_transient_menus_and_row_action_contract(client):
@@ -212,7 +217,9 @@ def test_fleet_transient_menus_and_row_action_contract(client):
     assert 'class="filter-panel transient-menu"' in page
     assert 'class="action-menu transient-menu"' in page
     assert 'menuButton.textContent = "⋮"' in script
-    assert all(f'"{label}"' in script for label in ("Dashboard", "Details", "Technical"))
+    assert all(f'"{label}"' in script for label in
+               ("Dashboard", "Details", "Technical", "Configuration"))
+    assert '`/nodes/${encodedNodeId}/configuration`' in script
     assert 'className = `button-link ${style}`' not in script
     assert 'document.addEventListener("click"' in script
     assert 'event.key === "Escape"' in script
